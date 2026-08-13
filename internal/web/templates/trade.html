@@ -1,0 +1,150 @@
+{{define "trade.html"}}
+{{template "head" .}}
+
+{{if .Data.LiveMode}}
+<p class="alert alert-error">
+  <b>LIVE.</b> Orders placed here go to the exchange with real money.
+</p>
+{{end}}
+
+<div class="cols">
+  <section class="card">
+    <h2>Order ticket</h2>
+
+    {{/* In live mode the ticket demands an extra deliberate confirmation. In
+         paper mode it does not — friction there teaches you to click through
+         the dialog, which is exactly the habit you do not want when it starts
+         guarding real money. */}}
+    <form id="ticket" method="post" action="/api/orders" class="ticket"
+          data-result="#order-result"
+          {{if .Data.LiveMode}}data-confirm="LIVE ORDER — real money. Send it?"{{end}}>
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+
+      <label for="symbol">Instrument</label>
+      <input id="symbol" name="symbol" type="text" list="instrument-list"
+             autocomplete="off" spellcheck="false" required
+             placeholder="e.g. NIFTY24AUG24500CE">
+      <datalist id="instrument-list"></datalist>
+      <p id="lot-hint" class="muted small">Lot size is resolved from the instrument master.</p>
+
+      <div class="row">
+        <div>
+          <label for="side">Side</label>
+          <select id="side" name="side">
+            <option value="BUY">BUY</option>
+            <option value="SELL">SELL</option>
+          </select>
+        </div>
+        <div>
+          <label for="lots">Lots</label>
+          {{/* Quantity is lots, never a raw share count: typing a bare quantity
+               is the classic route to an order 75x larger than intended. */}}
+          <input id="lots" name="lots" type="number" min="1" step="1" value="1" required>
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="order_type">Type</label>
+          <select id="order_type" name="order_type">
+            <option value="MARKET">MARKET</option>
+            <option value="LIMIT">LIMIT</option>
+            <option value="SL">SL</option>
+            <option value="SL-M">SL-M</option>
+          </select>
+        </div>
+        <div>
+          <label for="product">Product</label>
+          <select id="product" name="product">
+            <option value="MIS">MIS (intraday)</option>
+            <option value="NRML">NRML (overnight)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="price">Limit price</label>
+          <input id="price" name="price" type="number" step="0.05" min="0" placeholder="—">
+        </div>
+        <div>
+          <label for="trigger_price">Trigger price</label>
+          <input id="trigger_price" name="trigger_price" type="number" step="0.05" min="0" placeholder="—">
+        </div>
+      </div>
+
+      <button class="btn {{if .Data.LiveMode}}btn-danger{{else}}btn-primary{{end}}" type="submit">
+        {{if .Data.LiveMode}}PLACE LIVE ORDER{{else}}Place paper order{{end}}
+      </button>
+    </form>
+
+    <div id="order-result" aria-live="polite"></div>
+  </section>
+
+  <section class="card">
+    <h2>Watchlist</h2>
+    {{template "watchlist_table" .Data}}
+
+    <h2 style="margin-top:24px">Positions</h2>
+    <div data-poll="/partials/positions" data-poll-ms="5000">
+      {{template "positions_table" .}}
+    </div>
+
+    <form method="post" action="/api/positions/squareoff"
+          data-confirm="Square off EVERY open position at market. Continue?"
+          data-result="#order-result" class="inline">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <button class="btn btn-danger" type="submit">Square off everything</button>
+    </form>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Open orders</h2>
+  <div data-poll="/partials/orders" data-poll-ms="4000">
+    {{template "orders_table" .}}
+  </div>
+</section>
+
+{{template "foot" .}}
+{{end}}
+
+
+{{define "orders_table"}}
+{{if .Data.Orders}}
+<table class="grid-table">
+  <thead>
+    <tr>
+      <th>Symbol</th><th>Side</th><th>Type</th>
+      <th class="r">Qty</th><th class="r">Filled</th><th class="r">Price</th>
+      <th>Status</th><th>Mode</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Data.Orders}}
+    <tr>
+      <td class="mono">{{.TradingSymbol}}</td>
+      <td class="{{if eq (printf "%s" .Side) "BUY"}}pnl-up{{else}}pnl-down{{end}}">{{.Side}}</td>
+      <td>{{.OrderType}}</td>
+      <td class="r mono">{{.Quantity}}</td>
+      <td class="r mono">{{.FilledQuantity}}</td>
+      <td class="r mono">{{if .Price}}{{num .Price}}{{else}}MKT{{end}}</td>
+      <td>{{.Status}}</td>
+      {{/* Every row states which broker handled it, so a day that mixed paper
+           and live is unambiguous after the fact. */}}
+      <td><span class="chip chip-{{if eq .Mode "live"}}bad{{else}}ok{{end}}">{{upper .Mode}}</span></td>
+      <td>
+        <form method="post" action="/api/orders/{{.ID}}/cancel"
+              data-result="#order-result" class="inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+          <button class="btn btn-quiet btn-sm" type="submit">Cancel</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+  <p class="muted">No open orders.</p>
+{{end}}
+{{end}}

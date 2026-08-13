@@ -1,0 +1,3 @@
+{{define "order_result.html"}}
+<p class="alert alert-{{if eq .Kind "ok"}}ok{{else}}error{{end}}">{{.Message}}</p>
+{{end}}

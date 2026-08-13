@@ -1,0 +1,49 @@
+{{define "connect.html"}}
+{{template "head" .}}
+
+<div class="card">
+  <h1>Connect to Zerodha</h1>
+
+  {{if eq .Status.Kite.State "no_credentials"}}
+    <p class="alert alert-error">
+      No Kite API credentials are configured. Put <code>api_key</code> and
+      <code>api_secret</code> in your secrets file (or the
+      <code>KITE_API_KEY</code> / <code>KITE_API_SECRET</code> environment
+      variables) and restart.
+    </p>
+  {{else}}
+    {{if eq .Status.Kite.State "expired"}}
+      <p class="alert alert-warn">
+        The previous session expired. Zerodha invalidates access tokens every
+        morning at about 06:00 IST, so this is expected once a day.
+      </p>
+    {{end}}
+    {{if .Status.Kite.LastError}}
+      <p class="alert alert-error">{{.Status.Kite.LastError}}</p>
+    {{end}}
+
+    <p>
+      Zerodha requires an interactive login once per trading day. You will be
+      sent to Kite, and returned here with a fresh session.
+    </p>
+
+    <p><a class="btn btn-primary" href="/kite/login">Log in with Zerodha →</a></p>
+
+    <details class="muted small">
+      <summary>Redirect URL setup</summary>
+      <p>
+        Your Kite Connect app's <b>Redirect URL</b> must be set to exactly this,
+        with no trailing slash:
+      </p>
+      <p><code>{{.Status.RedirectURL}}</code></p>
+      <p>
+        Zerodha matches it exactly and rejects anything else. If this address is
+        wrong, set <code>web.public_url</code> in your config to the URL you
+        actually reach this server on.
+      </p>
+    </details>
+  {{end}}
+</div>
+
+{{template "foot" .}}
+{{end}}

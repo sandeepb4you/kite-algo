@@ -1,0 +1,62 @@
+{{define "head"}}
+<!doctype html>
+<html lang="en" data-mode="{{.Status.Mode}}" data-live="{{.Status.LiveActive}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{if .Status.LiveActive}}[LIVE]{{else}}[PAPER]{{end}} {{.Title}} — kite-algo</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+  <script src="/static/ws.js" defer></script>
+</head>
+<body data-csrf="{{.CSRF}}">
+
+{{/* The mode band is the single most important piece of chrome on the page:
+     it must be impossible to mistake simulated trading for real trading. */}}
+{{if .Status.LiveActive}}
+  <div class="modeband modeband-live">
+    ⚠ LIVE TRADING — REAL MONEY
+    {{if .Status.Kite.UserID}}· {{.Status.Kite.UserID}}{{end}}
+  </div>
+{{else if .Status.LiveArmed}}
+  <div class="modeband modeband-armed">
+    ARMED FOR LIVE — not yet confirmed. Orders are still simulated.
+  </div>
+{{else}}
+  <div class="modeband modeband-paper">
+    PAPER TRADING — simulated fills, no real orders
+  </div>
+{{end}}
+
+<header class="topbar">
+  <a class="brand" href="/">kite-algo</a>
+  <nav>
+    <a href="/" {{if eq .Nav ""}}class="on"{{end}}>Dashboard</a>
+    <a href="/trade" {{if eq .Nav "trade"}}class="on"{{end}}>Terminal</a>
+    <a href="/market" {{if eq .Nav "market"}}class="on"{{end}}>Market</a>
+  </nav>
+  <div class="spacer"></div>
+  <span id="conn-dot" class="chip chip-warn">connecting</span>
+  <span data-poll="/partials/status" data-poll-ms="10000"></span>
+  <form method="post" action="/logout" class="inline">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <button class="btn btn-quiet" type="submit">Sign out</button>
+  </form>
+</header>
+
+<div id="toasts" class="toasts"></div>
+
+<main>
+{{end}}
+
+
+{{define "foot"}}
+</main>
+<footer class="footer">
+  <span>mode <b>{{.Status.Mode}}</b></span>
+  <span>routing <b>{{if .Status.LiveActive}}live{{else}}paper{{end}}</b></span>
+  <span>uptime {{.Status.Uptime}}</span>
+</footer>
+</body>
+</html>
+{{end}}

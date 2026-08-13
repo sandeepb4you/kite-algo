@@ -132,15 +132,37 @@ The startup log tells you which source was used (`source=secrets-file`,
 `source=env`, or `source=config.yaml`) and prints the resolved `secrets_path`.
 Disable the secrets file by setting `secrets_path: ""` in config.
 
+### Setting the web password
+
+The UI is password-protected. Set it once:
+
+```bash
+./tradebot -set-password        # writes a PBKDF2 hash into your secrets file
+```
+
+The app refuses to bind anything but loopback until a password is set — an
+unauthenticated UI that can place orders is the worst failure mode here.
+
 ### Getting the access token
 
-Kite uses short-lived session tokens. Once a day:
+Kite uses short-lived session tokens that expire every morning around 06:00 IST.
+**You no longer manage this by hand.**
 
-1. Run the binary once; it prints your login URL (or use `LoginURL()`):
-   `https://kite.trade/connect/login?api_key=...&v=3`
-2. Log in; Zerodha redirects to your app URL with `?request_token=...`.
-3. The platform exchanges that for an `access_token` (or you can obtain one via
-   the session flow and paste it into your secrets file / `KITE_ACCESS_TOKEN`).
+1. Register your Kite Connect app's **Redirect URL** as exactly
+   `<web.public_url>/kite/callback` — e.g. `https://trade.example.com/kite/callback`.
+   Zerodha matches it character for character and allows no wildcards. The
+   `/connect` page in the UI shows you the exact string to paste.
+2. Start the server and open it in a browser. It starts fine with no token.
+3. Sign in, click **Log in with Zerodha**, and you are returned connected.
+
+The token is stored in the database, so restarting the process mid-session does
+not send you back through Zerodha. When it expires the next morning, the UI shows
+a banner and one click renews it.
+
+> The redirect is a *browser* navigation, not a server-to-server callback —
+> Zerodha never contacts your machine. So the server only has to be reachable
+> from your own browser, which means a Tailscale/WireGuard address works and the
+> VM need not be exposed to the internet at all.
 
 ---
 
@@ -226,34 +248,78 @@ See `config.example.yaml` for all options with comments. Key sections:
 ## Safety model
 
 1. **Default is safe** — `mode: dryrun` or `paper`; no real orders possible.
-2. **Live requires two confirmations**:
+2. **Live requires three gates**:
    - `live_confirm: true` in config, **and**
-   - typing `I UNDERSTAND` at startup.
+   - the process still boots with a *simulated* broker installed, so nothing can
+     reach the exchange even in live mode, **and**
+   - an explicit confirmation in the web UI: typing `I UNDERSTAND` *and*
+     re-entering your password. Only then is the live broker swapped in.
+
+   The confirmation is dropped on restart, so a crash-restart never resumes real
+   trading unattended.
 3. **Risk manager runs before every order** — daily-loss halt, position cap,
-   order-value cap, lot-size validation.
-4. **Every order/fill is persisted** with its mode (`paper`/`live`) for audit.
+   order-value cap, lot-size validation. Manual orders from the web UI go
+   through the same checks; a hand-typed order is not a trusted order.
+4. **Closing orders are never blocked by the exposure limits.** The daily-loss
+   and order-value caps exist to stop you *opening* risk. Applying them to exits
+   would have the risk manager refuse the square-off on exactly the day the loss
+   limit tripped — so `OrderIntent: IntentClose` exempts them. Lot-size
+   validation still applies, because the exchange rejects a bad quantity anyway.
+5. **Order quantity is entered in lots**, not shares. The server multiplies by
+   the instrument's lot size, so a stray keystroke cannot produce an order 75×
+   larger than intended.
+6. **Every order/fill is persisted** with its mode (`paper`/`live`) for audit,
+   and every order row in the UI shows which broker handled it.
 
 ---
 
-## Known limitations (v1)
+## Known limitations
 
 - Realized P&L on **fully-closed** positions in *live* mode isn't reflected in
   the in-memory day-P&L (Kite's `net` positions drop flat rows). Paper mode
   tracks it correctly. Workaround: persist fills and compute from the `fills`
   table.
 - No backtesting engine yet (tick/candle *recording* is in place; replay isn't).
-- No web UI / dashboard — logs only.
+- The web UI covers login, session management, a status dashboard, live
+  market-data streaming, and a manual trading terminal. The algo control panel
+  (runtime strategy start/stop) is the next phase.
+- Strategies are still declared in `config.yaml` and registered at startup;
+  runtime start/stop from the UI is not wired yet.
+- `shortstraddle` has no day rollover — it trades once per process. Fine for the
+  old restart-daily CLI, **not** for a long-running server. Fix before running it
+  unattended.
 - Single broker (Kite), single account.
 - Holiday calendar not tracked (expiry/square-off assumes last Thursday).
+- The `-race` detector needs a C toolchain, which this project deliberately
+  avoids (pure-Go SQLite). Run `go test -race` on a machine with gcc, or in CI.
+
+---
+
+## Web UI
+
+Server-rendered Go templates plus a small amount of vanilla JavaScript. **No
+frontend build step and no third-party JS** — the ~30 lines of fragment polling
+that would otherwise justify htmx live in `static/app.js`, and the page's CSP
+forbids loading anything from another origin.
+
+Market data reaches the browser over a WebSocket (`static/ws.js`), coalesced
+server-side to roughly 5 updates/sec per client — an option chain ticks far
+faster than a screen can be read. Each browser only receives the symbols it
+declared, via `data-ltp` attributes in the rendered HTML.
+
+The socket is a **latency optimisation, not a correctness dependency**: every
+live region also carries a `data-poll` fallback, so a broken socket makes the UI
+a few seconds stale rather than wrong.
 
 ---
 
 ## Roadmap
 
+- Manual trading terminal (order ticket, orderbook, square-off)
+- Strategy registry with runtime start/stop and a generic parameter form
+- Historical-data client + candle cache, then a replay backtester
 - Fill-based realized P&L reconciliation for live mode
-- Tick replay backtester
 - Multi-leg order types (spread entry as one unit)
-- Web dashboard + Prometheus metrics
 
 ---
 

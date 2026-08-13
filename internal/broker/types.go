@@ -23,17 +23,17 @@ type OrderType string
 const (
 	OrderTypeMarket OrderType = "MARKET"
 	OrderTypeLimit  OrderType = "LIMIT"
-	OrderTypeSL     OrderType = "SL"      // stop-loss (market)
-	OrderTypeSLM    OrderType = "SL-M"    // stop-loss market
+	OrderTypeSL     OrderType = "SL"   // stop-loss (market)
+	OrderTypeSLM    OrderType = "SL-M" // stop-loss market
 )
 
 // ProductType maps to Kite's product codes.
 type ProductType string
 
 const (
-	ProductMIS        ProductType = "MIS"        // intraday
-	ProductNRML       ProductType = "NRML"       // overnight (futures/options)
-	ProductCNC        ProductType = "CNC"        // equity delivery
+	ProductMIS  ProductType = "MIS"  // intraday
+	ProductNRML ProductType = "NRML" // overnight (futures/options)
+	ProductCNC  ProductType = "CNC"  // equity delivery
 )
 
 // OrderStatus is the lifecycle state of an order.
@@ -41,8 +41,8 @@ type OrderStatus string
 
 const (
 	StatusPending   OrderStatus = "PENDING"
-	StatusOpen      OrderStatus = "OPEN"      // with exchange
-	StatusComplete  OrderStatus = "COMPLETE"  // fully filled
+	StatusOpen      OrderStatus = "OPEN"     // with exchange
+	StatusComplete  OrderStatus = "COMPLETE" // fully filled
 	StatusRejected  OrderStatus = "REJECTED"
 	StatusCancelled OrderStatus = "CANCELLED"
 )
@@ -55,27 +55,44 @@ const (
 	ValidityIOC Validity = "IOC"
 )
 
+// OrderIntent says whether an order opens exposure or reduces it.
+//
+// This is a risk-control input, not an exchange field. Kite has no such concept;
+// it exists so the risk manager can tell "I want to take a new position" apart
+// from "I want out of the one I have". Limits that exist to stop you digging
+// deeper must never stop you climbing out.
+type OrderIntent string
+
+const (
+	// IntentOpen is the default: the order may increase exposure.
+	IntentOpen OrderIntent = ""
+	// IntentClose marks an order that reduces or flattens an existing position —
+	// a square-off, a stop, or a strategy unwinding a leg.
+	IntentClose OrderIntent = "close"
+)
+
 // OrderRequest is what a strategy submits to place an order.
 type OrderRequest struct {
-	StrategyID      string      // which strategy placed this order (audit trail)
-	Exchange        string      // NFO, NSE, ...
-	TradingSymbol   string      // e.g. NIFTY24AUG24500CE
-	Product         ProductType
-	OrderType       OrderType
-	Side            Side
-	Quantity        int
-	Price           float64 // limit price (0 for market)
-	TriggerPrice    float64 // stop-loss trigger (0 if none)
-	Validity        Validity
-	Tag             string // free-form strategy tag
-	ClientOrderID   string // optional idempotency key (we generate one if empty)
+	StrategyID    string      // which strategy placed this order (audit trail)
+	Intent        OrderIntent // open (default) or close; see OrderIntent
+	Exchange      string      // NFO, NSE, ...
+	TradingSymbol string      // e.g. NIFTY24AUG24500CE
+	Product       ProductType
+	OrderType     OrderType
+	Side          Side
+	Quantity      int
+	Price         float64 // limit price (0 for market)
+	TriggerPrice  float64 // stop-loss trigger (0 if none)
+	Validity      Validity
+	Tag           string // free-form strategy tag
+	ClientOrderID string // optional idempotency key (we generate one if empty)
 }
 
 // Order is the persisted/returned representation of an order after submission.
 type Order struct {
-	ID              string      // internal id
-	ExchangeOrderID string      // broker/exchange id
-	ClientOrderID   string      // idempotency key
+	ID              string // internal id
+	ExchangeOrderID string // broker/exchange id
+	ClientOrderID   string // idempotency key
 	StrategyID      string
 	Exchange        string
 	TradingSymbol   string

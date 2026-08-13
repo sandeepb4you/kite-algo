@@ -100,3 +100,34 @@ CREATE TABLE IF NOT EXISTS candles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_candles_symbol ON candles(trading_symbol);
+
+-- Kite session: the current Zerodha access token. Single row (id is pinned to
+-- 1). Tokens expire daily around 06:00 IST and are obtained via an interactive
+-- browser login, so persisting the live one is what lets the process restart
+-- mid-session without forcing the operator back through Zerodha's login page.
+--
+-- This is deliberately NOT stored in the YAML secrets file: that file is
+-- hand-edited and comment-rich, and rewriting it at runtime would destroy the
+-- operator's own content. api_key/api_secret stay there; only this rotating
+-- token lives here.
+CREATE TABLE IF NOT EXISTS kite_sessions (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    api_key      TEXT NOT NULL,
+    access_token TEXT NOT NULL,
+    user_id      TEXT NOT NULL DEFAULT '',
+    issued_at    TEXT NOT NULL,
+    expires_at   TEXT NOT NULL
+);
+
+-- Web sessions: logged-in browser sessions for the single operator. Persisted
+-- so a service restart does not log you out.
+CREATE TABLE IF NOT EXISTS web_sessions (
+    id         TEXT PRIMARY KEY,          -- opaque random token from the cookie
+    csrf_token TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    user_agent TEXT NOT NULL DEFAULT '',
+    ip         TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);

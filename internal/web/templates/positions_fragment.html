@@ -1,0 +1,30 @@
+{{define "positions_fragment.html"}}{{template "positions_table" .}}{{end}}
+
+
+{{define "positions_table"}}
+{{if .Data.Positions}}
+<table class="grid-table">
+  <thead>
+    <tr>
+      <th>Strategy</th><th>Symbol</th><th>Product</th>
+      <th class="r">Qty</th><th class="r">Avg</th><th class="r">LTP</th><th class="r">P&amp;L</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Data.Positions}}
+    <tr>
+      <td>{{if .StrategyID}}{{.StrategyID}}{{else}}—{{end}}</td>
+      <td class="mono">{{.TradingSymbol}}</td>
+      <td>{{.Product}}</td>
+      <td class="r mono">{{.NetQuantity}}</td>
+      <td class="r mono">{{num .AveragePrice}}</td>
+      <td class="r mono" data-ltp="{{.TradingSymbol}}">{{num .LastPrice}}</td>
+      <td class="r mono {{pnlClass .PnL}}">{{signed .PnL}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+  <p class="muted">No open positions.</p>
+{{end}}
+{{end}}

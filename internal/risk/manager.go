@@ -11,6 +11,7 @@ package risk
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"kite-algo/internal/broker"
 )
@@ -33,7 +34,12 @@ type RiskError struct {
 func (e *RiskError) Error() string { return fmt.Sprintf("risk:%s: %s", e.Rule, e.Message) }
 
 // Manager evaluates orders against Limits.
+//
+// Limits are adjustable at runtime from the web UI, so every access goes
+// through the mutex: Check runs on the order path (potentially the market-data
+// goroutine) while SetLimits runs on an HTTP handler goroutine.
 type Manager struct {
+	mu     sync.RWMutex
 	limits Limits
 }
 
@@ -43,7 +49,19 @@ func NewManager(limits Limits) *Manager {
 }
 
 // Limits returns the configured limits (for display/logging).
-func (m *Manager) Limits() Limits { return m.limits }
+func (m *Manager) Limits() Limits {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.limits
+}
+
+// SetLimits replaces the active limits. Takes effect on the next order; orders
+// already submitted to the broker are unaffected.
+func (m *Manager) SetLimits(l Limits) {
+	m.mu.Lock()
+	m.limits = l
+	m.mu.Unlock()
+}
 
 // Check returns nil if the order is allowed, or a *RiskError describing the
 // violated rule.
@@ -57,28 +75,46 @@ func (m *Manager) Limits() Limits { return m.limits }
 func (m *Manager) Check(ctx context.Context, req broker.OrderRequest, lotSize int, openPositions int, dayPnL float64, openingNew bool) error {
 	_ = ctx // reserved for future use (e.g. tracing); checks are synchronous
 
+	// Snapshot once so a concurrent SetLimits cannot change the rules midway
+	// through evaluating a single order.
+	m.mu.RLock()
+	limits := m.limits
+	m.mu.RUnlock()
+
+	// Orders that reduce exposure are exempt from the two limits below.
+	//
+	// This is not a convenience. The daily-loss rule trips precisely on the day
+	// you most need to flatten, and an unconditional check would have the risk
+	// manager reject the square-off that stops the bleeding — including the
+	// panic button. A limit whose purpose is to stop you opening new risk must
+	// never stop you shedding risk you already carry.
+	//
+	// Lot-multiple validation (rule 3) still applies to closes: the exchange
+	// rejects a malformed quantity regardless of intent.
+	closing := req.Intent == broker.IntentClose
+
 	// 1. Daily loss limit — the most important guardrail for options.
-	if m.limits.MaxDailyLoss > 0 && dayPnL <= -m.limits.MaxDailyLoss {
+	if !closing && limits.MaxDailyLoss > 0 && dayPnL <= -limits.MaxDailyLoss {
 		return &RiskError{
 			Rule: "max-daily-loss",
 			Message: fmt.Sprintf(
-				"day PnL %.2f has hit the -%.2f limit; no new entries", dayPnL, m.limits.MaxDailyLoss),
+				"day PnL %.2f has hit the -%.2f limit; no new entries", dayPnL, limits.MaxDailyLoss),
 		}
 	}
 
 	// 2. Order value limit (qty * reference price).
-	if m.limits.MaxOrderValue > 0 && req.Price > 0 {
+	if !closing && limits.MaxOrderValue > 0 && req.Price > 0 {
 		value := float64(req.Quantity) * req.Price
-		if value > m.limits.MaxOrderValue {
+		if value > limits.MaxOrderValue {
 			return &RiskError{
 				Rule:    "max-order-value",
-				Message: fmt.Sprintf("order value %.2f exceeds limit %.2f", value, m.limits.MaxOrderValue),
+				Message: fmt.Sprintf("order value %.2f exceeds limit %.2f", value, limits.MaxOrderValue),
 			}
 		}
 	}
 
 	// 3. Lots-per-trade + valid-lot-quantity checks.
-	if m.limits.MaxLotsPerTrade > 0 && lotSize > 0 {
+	if limits.MaxLotsPerTrade > 0 && lotSize > 0 {
 		if req.Quantity%lotSize != 0 {
 			return &RiskError{
 				Rule:    "invalid-lot-quantity",
@@ -86,20 +122,20 @@ func (m *Manager) Check(ctx context.Context, req broker.OrderRequest, lotSize in
 			}
 		}
 		lots := req.Quantity / lotSize
-		if lots > m.limits.MaxLotsPerTrade {
+		if lots > limits.MaxLotsPerTrade {
 			return &RiskError{
 				Rule:    "max-lots-per-trade",
-				Message: fmt.Sprintf("%d lots exceeds limit %d", lots, m.limits.MaxLotsPerTrade),
+				Message: fmt.Sprintf("%d lots exceeds limit %d", lots, limits.MaxLotsPerTrade),
 			}
 		}
 	}
 
 	// 4. Open-positions cap — only blocks orders that would open a NEW symbol.
-	if m.limits.MaxOpenPositions > 0 && openingNew && openPositions >= m.limits.MaxOpenPositions {
+	if limits.MaxOpenPositions > 0 && openingNew && openPositions >= limits.MaxOpenPositions {
 		return &RiskError{
 			Rule: "max-open-positions",
 			Message: fmt.Sprintf(
-				"%d open positions at the limit %d", openPositions, m.limits.MaxOpenPositions),
+				"%d open positions at the limit %d", openPositions, limits.MaxOpenPositions),
 		}
 	}
 

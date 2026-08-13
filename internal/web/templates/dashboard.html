@@ -1,0 +1,39 @@
+{{define "dashboard.html"}}
+{{template "head" .}}
+
+<div class="grid">
+  <section class="card">
+    <h2>Day P&amp;L</h2>
+    <p id="day-pnl" class="figure {{pnlClass .Status.DayPnL}}">₹{{signed .Status.DayPnL}}</p>
+    <p class="muted small">
+      Daily loss limit ₹{{money .Status.RiskLimits.MaxDailyLoss}} ·
+      max {{.Status.RiskLimits.MaxLotsPerTrade}} lot(s)/order ·
+      max {{.Status.RiskLimits.MaxOpenPositions}} open positions
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Session</h2>
+    <table class="kv">
+      <tr><th>Zerodha</th><td>{{.Status.Kite.State}}</td></tr>
+      <tr><th>User</th><td>{{if .Status.Kite.UserID}}{{.Status.Kite.UserID}}{{else}}—{{end}}</td></tr>
+      <tr><th>Streaming</th><td>{{if .Status.Streaming}}yes{{else}}<b class="warn">no</b>{{end}}</td></tr>
+      <tr><th>Expires</th><td>{{ist .Status.Kite.ExpiresAt}} IST</td></tr>
+      <tr><th>Routing</th><td>{{.Data.Routing}}</td></tr>
+    </table>
+    <form method="post" action="/kite/disconnect" class="inline">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <button class="btn btn-quiet" type="submit">Disconnect</button>
+    </form>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Positions</h2>
+  <div data-poll="/partials/positions" data-poll-ms="5000">
+    {{template "positions_table" .}}
+  </div>
+</section>
+
+{{template "foot" .}}
+{{end}}

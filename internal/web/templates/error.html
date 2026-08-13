@@ -1,0 +1,14 @@
+{{define "error.html"}}
+{{template "head" .}}
+
+<div class="card">
+  <h1>{{.ErrTitle}}</h1>
+  <p class="alert alert-error">{{.ErrDetail}}</p>
+  <p>
+    <a class="btn btn-quiet" href="/">Back to dashboard</a>
+    <a class="btn btn-quiet" href="/connect">Connect to Zerodha</a>
+  </p>
+</div>
+
+{{template "foot" .}}
+{{end}}

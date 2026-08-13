@@ -10,9 +10,11 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -31,10 +33,10 @@ const (
 
 // Config is the top-level configuration object.
 type Config struct {
-	Mode        Mode          `yaml:"mode"`
-	Log         LogConfig     `yaml:"log"`
-	Kite        KiteConfig    `yaml:"kite"`
-	LiveConfirm bool          `yaml:"live_confirm"`
+	Mode        Mode       `yaml:"mode"`
+	Log         LogConfig  `yaml:"log"`
+	Kite        KiteConfig `yaml:"kite"`
+	LiveConfirm bool       `yaml:"live_confirm"`
 	// SecretsPath is the location of an optional YAML secrets file holding Kite
 	// credentials OUTSIDE the repo. Defaults to ~/.trading/secrets.yaml. Values
 	// in the secrets file override config.yaml; env vars override both. Set to
@@ -43,7 +45,40 @@ type Config struct {
 	Recording   RecordConfig  `yaml:"recording"`
 	Storage     StorageConfig `yaml:"storage"`
 	Risk        RiskConfig    `yaml:"risk"`
+	Web         WebConfig     `yaml:"web"`
 	Strategies  []StrategyCfg `yaml:"strategies"`
+}
+
+// WebConfig controls the built-in web UI.
+type WebConfig struct {
+	// Addr is the listen address. Defaults to 127.0.0.1:8080 — loopback only,
+	// because the app must sit behind a TLS-terminating reverse proxy rather
+	// than face the internet itself. Binding to a routable address without a
+	// password configured is refused at startup.
+	Addr string `yaml:"addr"`
+
+	// PublicURL is the externally-visible base URL (e.g. https://trade.example.com),
+	// used to build the Kite redirect URL and to validate WebSocket origins.
+	// Must match the Redirect URL registered in the Kite developer console
+	// exactly, including scheme and path.
+	PublicURL string `yaml:"public_url"`
+
+	// PasswordHash authenticates the single operator. Generate it with
+	// `tradebot -set-password`; it belongs in the secrets file, not here.
+	PasswordHash string `yaml:"password_hash"`
+
+	// SessionTTL is how long a browser login lasts. Default 720h (30 days).
+	SessionTTL time.Duration `yaml:"session_ttl"`
+
+	// TrustProxy makes the app read the client IP from X-Forwarded-For. Only
+	// enable when a reverse proxy you control sets that header, otherwise
+	// anyone can spoof it and defeat the login lockout.
+	TrustProxy bool `yaml:"trust_proxy"`
+
+	// TickIntervalMS is how often coalesced market-data frames are flushed to
+	// browsers. Default 200ms (~5 updates/sec) — fast enough to read, far below
+	// the raw tick rate of an option chain.
+	TickIntervalMS int `yaml:"tick_interval_ms"`
 }
 
 // LogConfig controls logging.
@@ -75,10 +110,10 @@ type StorageConfig struct {
 
 // RiskConfig defines the pre-trade risk limits enforced by the risk manager.
 type RiskConfig struct {
-	MaxDailyLoss      float64 `yaml:"max_daily_loss"`       // rupees; halt trading if exceeded
-	MaxOpenPositions  int     `yaml:"max_open_positions"`   // concurrent open positions
-	MaxOrderValue     float64 `yaml:"max_order_value"`      // rupees per single order
-	MaxLotsPerTrade   int     `yaml:"max_lots_per_trade"`   // lots allowed in one order
+	MaxDailyLoss     float64 `yaml:"max_daily_loss"`     // rupees; halt trading if exceeded
+	MaxOpenPositions int     `yaml:"max_open_positions"` // concurrent open positions
+	MaxOrderValue    float64 `yaml:"max_order_value"`    // rupees per single order
+	MaxLotsPerTrade  int     `yaml:"max_lots_per_trade"` // lots allowed in one order
 }
 
 // StrategyCfg is the declarative config for one strategy instance.
@@ -94,9 +129,9 @@ type StrategyCfg struct {
 //
 // Credential precedence (most specific wins):
 //
-//	1. environment variables (KITE_API_KEY / KITE_API_SECRET / KITE_ACCESS_TOKEN)
-//	2. secrets file (secrets_path, outside the repo — ~/.trading/secrets.yaml)
-//	3. this config file (config.yaml)
+//  1. environment variables (KITE_API_KEY / KITE_API_SECRET / KITE_ACCESS_TOKEN)
+//  2. secrets file (secrets_path, outside the repo — ~/.trading/secrets.yaml)
+//  3. this config file (config.yaml)
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -137,6 +172,9 @@ func (c *Config) loadSecrets() error {
 	}
 	var s struct {
 		Kite KiteConfig `yaml:"kite"`
+		Web  struct {
+			PasswordHash string `yaml:"password_hash"`
+		} `yaml:"web"`
 	}
 	if err := yaml.Unmarshal(data, &s); err != nil {
 		return fmt.Errorf("parse secrets %s: %w", p, err)
@@ -150,6 +188,9 @@ func (c *Config) loadSecrets() error {
 	}
 	if s.Kite.AccessToken != "" {
 		c.Kite.AccessToken = s.Kite.AccessToken
+	}
+	if s.Web.PasswordHash != "" {
+		c.Web.PasswordHash = s.Web.PasswordHash
 	}
 	return nil
 }
@@ -205,7 +246,25 @@ func (c *Config) applyDefaults() {
 	if c.Risk.MaxLotsPerTrade == 0 {
 		c.Risk.MaxLotsPerTrade = 1
 	}
+	if c.Web.Addr == "" {
+		c.Web.Addr = "127.0.0.1:8080"
+	}
+	if c.Web.SessionTTL == 0 {
+		c.Web.SessionTTL = 30 * 24 * time.Hour
+	}
+	if c.Web.TickIntervalMS == 0 {
+		c.Web.TickIntervalMS = 200
+	}
+	if c.Web.PublicURL == "" {
+		c.Web.PublicURL = "http://" + c.Web.Addr
+	}
+	c.Web.PublicURL = strings.TrimRight(c.Web.PublicURL, "/")
 }
+
+// KiteRedirectURL is the URL Zerodha sends the browser back to after login.
+// This exact string must be registered as the Redirect URL of your Kite Connect
+// app — Zerodha requires an exact match, with no wildcards.
+func (c *Config) KiteRedirectURL() string { return c.Web.PublicURL + "/kite/callback" }
 
 // applyEnvOverrides lets secrets come from the environment rather than the YAML
 // file. Env wins over file so a deploy can inject credentials safely.
@@ -235,8 +294,17 @@ func (c *Config) validate() error {
 		if !c.LiveConfirm {
 			return fmt.Errorf("mode is 'live' but live_confirm is false; refusing to start in live mode by accident")
 		}
-		if c.Kite.APIKey == "" || c.Kite.APISecret == "" || c.Kite.AccessToken == "" {
-			return fmt.Errorf("mode is 'live' but kite credentials are incomplete (need api_key, api_secret, access_token)")
+		// api_key and api_secret must be provisioned ahead of time; the access
+		// token deliberately is NOT required here. It is short-lived (Zerodha
+		// expires it daily around 06:00 IST) and is now obtained through the
+		// browser login flow, so demanding it at startup would leave the server
+		// unable to boot and serve the very page that acquires it.
+		//
+		// This is safe because live mode is gated a second time at runtime: the
+		// engine starts with a paper broker installed and only swaps in the live
+		// broker after an explicit confirmation in the UI.
+		if c.Kite.APIKey == "" || c.Kite.APISecret == "" {
+			return fmt.Errorf("mode is 'live' but kite credentials are incomplete (need api_key and api_secret)")
 		}
 	}
 
@@ -245,7 +313,50 @@ func (c *Config) validate() error {
 			return fmt.Errorf("kite.api_key is required for %s mode (or set KITE_API_KEY env)", c.Mode)
 		}
 	}
-	return nil
+
+	return c.validateWeb()
+}
+
+// validateWeb enforces that the web UI is never exposed without a password.
+// An unauthenticated UI that can place orders on a routable address is the
+// worst failure mode this application has, so it is a hard startup error rather
+// than a warning.
+func (c *Config) validateWeb() error {
+	if c.Web.PasswordHash != "" {
+		return nil
+	}
+	if IsLoopbackAddr(c.Web.Addr) {
+		return nil // localhost-only with no password is fine for development
+	}
+	return fmt.Errorf(
+		"web.addr is %q (not loopback) but no web password is set; run 'tradebot -set-password' first, "+
+			"or bind to 127.0.0.1 and reach it through an authenticated tunnel", c.Web.Addr)
+}
+
+// IsLoopbackAddr reports whether a "host:port" listen address binds only to the
+// loopback interface. An empty host (":8080") binds every interface and is not
+// loopback.
+func IsLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// HasWebPassword reports whether an operator password is configured.
+func (c *Config) HasWebPassword() bool { return c.Web.PasswordHash != "" }
+
+// TickInterval is the browser market-data flush interval.
+func (c *Config) TickInterval() time.Duration {
+	return time.Duration(c.Web.TickIntervalMS) * time.Millisecond
 }
 
 // LogLevel converts the string level to slog.Level.

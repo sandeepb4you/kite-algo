@@ -1,0 +1,186 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	"kite-algo/internal/broker"
+)
+
+// ManualStrategyID attributes orders placed by hand in the web UI.
+//
+// Positions are keyed by strategy + symbol + product, so giving manual trades
+// their own identity keeps them from merging into a running strategy's book —
+// which would corrupt that strategy's P&L and confuse its exit logic.
+const ManualStrategyID = "manual"
+
+// ErrNoPosition is returned when asked to close something that is already flat.
+var ErrNoPosition = errors.New("no open position in that symbol")
+
+// PlaceManualOrder submits an operator's order from the web UI.
+//
+// It deliberately routes through PlaceOrder rather than the broker directly, so
+// a hand-typed order gets the same risk checks, persistence, and event
+// publication as one from a strategy. A manual order is not a trusted order.
+func (e *Engine) PlaceManualOrder(ctx context.Context, req broker.OrderRequest) (*broker.Order, error) {
+	req.StrategyID = ManualStrategyID
+	if req.Validity == "" {
+		req.Validity = broker.ValidityDay
+	}
+	if req.Exchange == "" {
+		req.Exchange = e.exchangeFor(req.TradingSymbol)
+	}
+	if req.Tag == "" {
+		req.Tag = "manual"
+	}
+	return e.PlaceOrder(ctx, req)
+}
+
+// SquareOff flattens the open position in one symbol with a market order.
+//
+// The order carries IntentClose, which exempts it from the exposure limits in
+// the risk manager. Without that, flattening would be refused on exactly the
+// day the daily-loss limit had tripped.
+func (e *Engine) SquareOff(ctx context.Context, strategyID, symbol string) (*broker.Order, error) {
+	var target *broker.Position
+	for _, p := range e.Positions() {
+		if p.TradingSymbol != symbol || !p.IsOpen() {
+			continue
+		}
+		if strategyID != "" && p.StrategyID != strategyID {
+			continue
+		}
+		found := p
+		target = &found
+		break
+	}
+	if target == nil {
+		return nil, fmt.Errorf("%w: %s", ErrNoPosition, symbol)
+	}
+	return e.flatten(ctx, *target)
+}
+
+// SquareOffAll flattens every open position. It returns the orders it placed
+// and any per-position failures, having attempted all of them: one symbol
+// failing must not leave the rest of the book open.
+func (e *Engine) SquareOffAll(ctx context.Context) ([]*broker.Order, []error) {
+	var (
+		placed []*broker.Order
+		errs   []error
+	)
+	for _, p := range e.Positions() {
+		if !p.IsOpen() {
+			continue
+		}
+		o, err := e.flatten(ctx, p)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p.TradingSymbol, err))
+			continue
+		}
+		placed = append(placed, o)
+	}
+	return placed, errs
+}
+
+// flatten places the opposing market order for one position.
+func (e *Engine) flatten(ctx context.Context, p broker.Position) (*broker.Order, error) {
+	side := broker.SideSell
+	qty := p.NetQuantity
+	if qty < 0 {
+		side = broker.SideBuy
+		qty = -qty
+	}
+
+	exchange := p.Exchange
+	if exchange == "" {
+		exchange = e.exchangeFor(p.TradingSymbol)
+	}
+
+	if e.logger != nil {
+		e.logger.Warn("squaring off position",
+			"symbol", p.TradingSymbol, "strategy", p.StrategyID,
+			"qty", qty, "side", side)
+	}
+
+	return e.PlaceOrder(ctx, broker.OrderRequest{
+		StrategyID:    p.StrategyID,
+		Intent:        broker.IntentClose,
+		Exchange:      exchange,
+		TradingSymbol: p.TradingSymbol,
+		Product:       p.Product,
+		OrderType:     broker.OrderTypeMarket,
+		Side:          side,
+		Quantity:      qty,
+		Validity:      broker.ValidityDay,
+		Tag:           "square-off",
+	})
+}
+
+// OpenOrders returns the currently pending orders from the active broker.
+func (e *Engine) OpenOrders(ctx context.Context) ([]broker.Order, error) {
+	br := e.currentBroker()
+	if br == nil {
+		return nil, nil
+	}
+	return br.GetOpenOrders(ctx)
+}
+
+// ExchangeFor resolves a symbol's exchange from the instrument master, falling
+// back to NFO — the only segment this platform currently loads.
+func (e *Engine) ExchangeFor(symbol string) string { return e.exchangeFor(symbol) }
+
+func (e *Engine) exchangeFor(symbol string) string {
+	e.cmu.RLock()
+	instruments := e.instruments
+	e.cmu.RUnlock()
+	if instruments != nil {
+		if inst, ok := instruments.Lookup(symbol); ok {
+			return inst.Exchange
+		}
+	}
+	return "NFO"
+}
+
+// SearchInstruments returns tradable symbols matching a query, for the order
+// ticket's typeahead. Matching is a case-insensitive substring on the trading
+// symbol; results are capped because an option chain has thousands of entries.
+func (e *Engine) SearchInstruments(query string, limit int) []Instrument {
+	e.cmu.RLock()
+	instruments := e.instruments
+	e.cmu.RUnlock()
+	if instruments == nil || strings.TrimSpace(query) == "" {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	matches := instruments.Search(query, limit)
+	out := make([]Instrument, 0, len(matches))
+	for _, inst := range matches {
+		v := Instrument{
+			TradingSymbol: inst.TradingSymbol,
+			Exchange:      inst.Exchange,
+			LotSize:       inst.LotSize,
+			Type:          inst.InstrumentType,
+			Strike:        inst.Strike,
+		}
+		if !inst.Expiry.IsZero() {
+			v.Expiry = inst.Expiry.Format("02 Jan 2006")
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// Instrument is the UI-facing view of a tradable instrument.
+type Instrument struct {
+	TradingSymbol string  `json:"symbol"`
+	Exchange      string  `json:"exchange"`
+	LotSize       int     `json:"lot_size"`
+	Type          string  `json:"type"`
+	Strike        float64 `json:"strike,omitempty"`
+	Expiry        string  `json:"expiry,omitempty"`
+}

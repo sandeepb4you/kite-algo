@@ -36,14 +36,48 @@ func (i Instrument) IsOption() bool {
 
 // Instruments is the in-memory instrument master with fast lookups.
 type Instruments struct {
-	bySymbol map[string]*Instrument     // trading symbol -> instrument
-	byToken  map[uint32]*Instrument     // instrument token -> instrument
+	bySymbol map[string]*Instrument // trading symbol -> instrument
+	byToken  map[uint32]*Instrument // instrument token -> instrument
 }
 
 // Lookup returns an instrument by trading symbol.
 func (m *Instruments) Lookup(symbol string) (*Instrument, bool) {
 	i, ok := m.bySymbol[strings.ToUpper(symbol)]
 	return i, ok
+}
+
+// Search returns instruments whose trading symbol contains query, case
+// insensitively, capped at limit results.
+//
+// Both the cap and the ordering matter for the order ticket's typeahead: an NFO
+// master holds tens of thousands of contracts, and raw map iteration order would
+// make the same query return different suggestions on each keystroke.
+func (m *Instruments) Search(query string, limit int) []Instrument {
+	needle := strings.ToUpper(strings.TrimSpace(query))
+	if needle == "" || limit <= 0 {
+		return nil
+	}
+
+	var matches []Instrument
+	for symbol, inst := range m.bySymbol {
+		if strings.Contains(symbol, needle) {
+			matches = append(matches, *inst)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		// Prefer symbols that start with the query, so typing "NIFTY24AUG"
+		// surfaces those contracts ahead of ones that merely contain it.
+		pi := strings.HasPrefix(strings.ToUpper(matches[i].TradingSymbol), needle)
+		pj := strings.HasPrefix(strings.ToUpper(matches[j].TradingSymbol), needle)
+		if pi != pj {
+			return pi
+		}
+		return matches[i].TradingSymbol < matches[j].TradingSymbol
+	})
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches
 }
 
 // LookupToken returns an instrument by its Kite instrument token.
@@ -193,8 +227,14 @@ type LTPResp map[string]struct {
 // GetLTP returns the last traded price for one or more "exchange:tradingsymbol"
 // keys, e.g. []string{"NFO:NIFTY24AUG24500CE"}.
 func (c *Client) GetLTP(ctx context.Context, keys []string) (LTPResp, error) {
+	// Kite expects the "i" parameter repeated once per instrument. Building the
+	// repetition by hand (strings.Join with "&i=") does not work: Encode()
+	// percent-escapes the separators, collapsing every key into one malformed
+	// value. Add() emits a genuine repeated parameter.
 	q := url.Values{}
-	q.Set("i", strings.Join(keys, "&i="))
+	for _, k := range keys {
+		q.Add("i", k)
+	}
 	var out LTPResp
 	if err := c.get(ctx, "/quote/ltp", q, &out); err != nil {
 		return nil, err

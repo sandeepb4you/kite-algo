@@ -1,0 +1,30 @@
+{{define "login.html"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — kite-algo</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="centered">
+  <form class="card card-narrow" method="post" action="/login">
+    <h1>kite-algo</h1>
+    <p class="muted">Operator sign-in · mode <b>{{.Mode}}</b></p>
+
+    {{if .Error}}<p class="alert alert-error">{{.Error}}</p>{{end}}
+
+    <input type="hidden" name="next" value="{{.Next}}">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password"
+           autocomplete="current-password" required autofocus>
+
+    <button class="btn btn-primary" type="submit">Sign in</button>
+
+    <p class="muted small">
+      No password yet? Run <code>tradebot -set-password</code> on the server.
+    </p>
+  </form>
+</body>
+</html>
+{{end}}

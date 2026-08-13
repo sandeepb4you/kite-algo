@@ -1,0 +1,46 @@
+{{define "market.html"}}
+{{template "head" .}}
+
+<section class="card">
+  <h2>Watchlist</h2>
+  {{if not .Data.Streaming}}
+    <p class="alert alert-warn">
+      Market data is not streaming. Prices below are the last known values.
+    </p>
+  {{end}}
+  {{/* The fragment is polled as the correctness baseline; the WebSocket
+       updates the same cells far more often when it is healthy. */}}
+  <div data-poll="/partials/watchlist" data-poll-ms="15000">
+    {{template "watchlist_table" .Data}}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Positions</h2>
+  <div data-poll="/partials/positions" data-poll-ms="5000">
+    {{template "positions_table" .}}
+  </div>
+</section>
+
+{{template "foot" .}}
+{{end}}
+
+
+{{define "watchlist_table"}}
+<table class="grid-table">
+  <thead>
+    <tr><th>Symbol</th><th class="r">Last</th><th class="r">Change</th></tr>
+  </thead>
+  <tbody>
+  {{range .Watchlist}}
+    <tr>
+      <td class="mono">{{.Symbol}}</td>
+      {{/* data-ltp is both the live-update target and the declaration that
+           tells ws.js to subscribe to this symbol. */}}
+      <td class="r mono" data-ltp="{{.Symbol}}">{{num .Last}}</td>
+      <td class="r mono pnl-flat" data-chg="{{.Symbol}}">—</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

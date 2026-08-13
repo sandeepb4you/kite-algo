@@ -1,0 +1,11 @@
+{{define "status_fragment.html"}}
+<span class="chip chip-{{if .Status.Streaming}}ok{{else if .Status.Kite.Connected}}warn{{else}}bad{{end}}">
+  {{if .Status.Streaming}}
+    streaming
+  {{else if .Status.Kite.Connected}}
+    connected · no ticks
+  {{else}}
+    <a href="/connect">Zerodha {{.Status.Kite.State}} — log in</a>
+  {{end}}
+</span>
+{{end}}

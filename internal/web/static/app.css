@@ -1,0 +1,259 @@
+/* kite-algo operator UI.
+   Dark by default: this is a screen that gets stared at for hours during market
+   sessions. Paper and live are distinguished by colour AND by text, never by
+   colour alone. */
+
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1e222b;
+  --line: #2a2f3a;
+  --text: #e6e8ee;
+  --muted: #8b93a7;
+  --accent: #4c8dff;
+  --up: #26a96c;
+  --down: #e5484d;
+  --warn: #f5a623;
+  --live: #c2262b;
+  --radius: 8px;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+body.centered {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+}
+
+/* --- mode band ----------------------------------------------------------- */
+
+.modeband {
+  padding: 6px 16px;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: center;
+}
+.modeband-paper { background: var(--panel-2); color: var(--muted); }
+.modeband-armed { background: var(--warn); color: #201700; }
+.modeband-live  { background: var(--live); color: #fff; }
+
+/* A live session also gets a permanent red frame, so the state is visible even
+   when the page is scrolled past the band. */
+html[data-live="true"] body { box-shadow: inset 0 0 0 3px var(--live); }
+
+/* --- chrome -------------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.brand { font-weight: 700; color: var(--text); text-decoration: none; }
+.topbar nav a {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.topbar nav a:hover, .topbar nav a.on { color: var(--text); background: var(--panel-2); }
+.spacer { flex: 1; }
+
+main { padding: 20px 16px; max-width: 1200px; margin: 0 auto; }
+
+.footer {
+  display: flex;
+  gap: 20px;
+  padding: 12px 16px;
+  color: var(--muted);
+  font-size: 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* --- cards --------------------------------------------------------------- */
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.card-narrow { width: min(380px, 92vw); }
+.card h1 { margin-top: 0; font-size: 20px; }
+.card h2 { margin-top: 0; font-size: 14px; text-transform: uppercase;
+           letter-spacing: 0.06em; color: var(--muted); }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.figure { font-size: 32px; font-weight: 700; margin: 8px 0; font-family: var(--mono); }
+
+/* --- tables -------------------------------------------------------------- */
+
+.grid-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.grid-table th, .grid-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+.grid-table th { color: var(--muted); font-weight: 600; font-size: 12px;
+                 text-transform: uppercase; letter-spacing: 0.04em; }
+.grid-table .r, th.r, td.r { text-align: right; }
+
+.kv { width: 100%; font-size: 14px; }
+.kv th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 12px 4px 0; }
+.kv td { padding: 4px 0; }
+
+.mono { font-family: var(--mono); }
+
+/* Wide tables scroll inside themselves rather than pushing the page sideways. */
+.card { overflow-x: auto; }
+
+/* --- values -------------------------------------------------------------- */
+
+.pnl-up { color: var(--up); }
+.pnl-down { color: var(--down); }
+.pnl-flat { color: var(--muted); }
+.warn { color: var(--warn); }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+
+/* --- controls ------------------------------------------------------------ */
+
+.btn {
+  display: inline-block;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn:hover { border-color: var(--accent); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn-quiet { color: var(--muted); }
+/* Destructive actions — square-off, and the order button in live mode. */
+.btn-danger { background: var(--live); border-color: var(--live); color: #fff; font-weight: 700; }
+.btn-sm { padding: 4px 9px; font-size: 12px; }
+.btn:disabled { opacity: 0.5; cursor: progress; }
+.inline { display: inline; }
+
+/* --- trading terminal ----------------------------------------------------- */
+
+.cols {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) 1fr;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 860px) {
+  .cols { grid-template-columns: 1fr; }
+}
+
+.ticket .row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.ticket .row > div { min-width: 0; }
+.ticket label { margin-top: 12px; }
+
+label { display: block; margin: 14px 0 4px; font-size: 13px; color: var(--muted); }
+input[type="password"], input[type="text"], input[type="number"], select {
+  width: 100%;
+  padding: 9px 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+}
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+form .btn-primary { width: 100%; margin-top: 16px; }
+
+code {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--bg);
+  padding: 2px 5px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+/* --- alerts and chips ---------------------------------------------------- */
+
+.alert { padding: 10px 12px; border-radius: 6px; border: 1px solid; font-size: 14px; }
+.alert-error { background: rgba(229, 72, 77, 0.12); border-color: var(--down); color: #ffb4b6; }
+.alert-warn  { background: rgba(245, 166, 35, 0.12); border-color: var(--warn); color: #ffd79a; }
+.alert-ok    { background: rgba(38, 169, 108, 0.12); border-color: var(--up); color: #9fe3c0; }
+
+.chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+}
+.chip a { color: inherit; }
+.chip-ok   { color: var(--up);   border-color: var(--up); }
+.chip-warn { color: var(--warn); border-color: var(--warn); }
+.chip-bad  { color: var(--down); border-color: var(--down); }
+
+details summary { cursor: pointer; }
+
+/* --- live price updates --------------------------------------------------- */
+
+/* A brief tint on change shows direction without redrawing the row, which
+   would destroy any text selection or focus the operator had. */
+@keyframes flash-up   { from { background: rgba(38, 169, 108, 0.45); } to { background: transparent; } }
+@keyframes flash-down { from { background: rgba(229, 72, 77, 0.45); }  to { background: transparent; } }
+
+.flash-up   { animation: flash-up 0.6s ease-out; }
+.flash-down { animation: flash-down 0.6s ease-out; }
+
+/* Respect a stated preference against motion: the colour still conveys the
+   direction, it just appears without the fade. */
+@media (prefers-reduced-motion: reduce) {
+  .flash-up, .flash-down { animation-duration: 0.01s; }
+}
+
+/* --- toasts --------------------------------------------------------------- */
+
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 50;
+  max-width: min(420px, 90vw);
+}
+
+.toast {
+  padding: 10px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.toast-ok   { border-color: var(--up); }
+.toast-warn { border-color: var(--warn); }
+.toast-err  { border-color: var(--down); }

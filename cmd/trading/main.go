@@ -1,24 +1,29 @@
-// Command trading is the entry point for the algo options trading platform.
+// Command trading runs the algo options trading platform and its web UI.
 //
-// It loads config, sets up the logger, storage, Kite client, broker (paper or
-// live), risk manager, and the trading engine with the example short-straddle
-// strategy, then runs until interrupted.
+// It is a long-running server. Unlike earlier versions it does NOT require a
+// Zerodha access token to start: it boots, serves the web UI, and acquires a
+// session when the operator completes the browser login. That inversion is what
+// makes it deployable as a service — a token expires every morning, and a
+// process that exits without one cannot serve the page that obtains it.
 //
 // Usage:
 //
-//	go run ./cmd/trading -config ./config.yaml
+//	tradebot -config config.yaml       # run the server
+//	tradebot -init-secrets             # scaffold the secrets file
+//	tradebot -set-password             # set the web UI password
 //
 // Modes:
 //
-//	dryrun : no credentials; boots and idles (smoke test).
-//	paper  : live market data, simulated orders. Default for development.
-//	live   : real orders. Requires live_confirm: true AND typing "I UNDERSTAND".
+//	dryrun : no credentials needed; boots and idles.
+//	paper  : live market data, simulated orders. The default for development.
+//	live   : real orders — and even then only after confirming in the UI.
 package main
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -26,39 +31,49 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
-	"log/slog"
-
-	"kite-algo/internal/broker"
+	"kite-algo/internal/app"
+	"kite-algo/internal/auth"
 	"kite-algo/internal/config"
-	"kite-algo/internal/engine"
-	"kite-algo/internal/kite"
 	"kite-algo/internal/logger"
-	"kite-algo/internal/risk"
 	"kite-algo/internal/storage/sqlite"
-	shortstraddle "kite-algo/internal/strategy/examples/shortstraddle"
+	"kite-algo/internal/web"
 )
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	initSecrets := flag.Bool("init-secrets", false,
 		"write a template secrets file to secrets_path (default ~/.trading/secrets.yaml) and exit")
+	setPassword := flag.Bool("set-password", false,
+		"set the web UI password and exit")
+	dev := flag.Bool("dev", false,
+		"reload templates and static assets from disk on every request")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
-	// Convenience: scaffold the secrets file at the configured (expanded) path.
 	if *initSecrets {
 		if err := writeSecretsTemplate(cfg.SecretsPath); err != nil {
-			fmt.Fprintf(os.Stderr, "init-secrets failed: %v\n", err)
-			os.Exit(1)
+			return err
 		}
-		fmt.Printf("wrote secrets template to %s — edit it and add your Kite credentials\n", config.ExpandPath(cfg.SecretsPath))
-		return
+		fmt.Printf("wrote secrets template to %s — edit it and add your Kite credentials\n",
+			config.ExpandPath(cfg.SecretsPath))
+		return nil
+	}
+
+	if *setPassword {
+		return setWebPassword(cfg.SecretsPath)
 	}
 
 	log := logger.New(os.Stderr, cfg.LogLevel(), cfg.Log.Format)
@@ -68,189 +83,157 @@ func main() {
 		"mode", cfg.Mode, "pid", os.Getpid(),
 		"secrets_path", config.ExpandPath(cfg.SecretsPath))
 	if cfg.HasCredentials() {
-		log.Info("kite credentials loaded",
-			"source", credentialSource(cfg))
+		log.Info("kite credentials loaded", "source", credentialSource(cfg))
 	} else if cfg.Mode != config.ModeDryRun {
-		log.Warn("no kite credentials found — set them in the secrets file, config.yaml, or env vars")
+		log.Warn("no kite api credentials found — set them in the secrets file or via KITE_API_KEY/KITE_API_SECRET")
 	}
-
-	// Live double-gate #1 (config flag) is enforced by config.Load/validate.
-	// Live double-gate #2: interactive confirmation.
 	if cfg.Mode == config.ModeLive {
-		if !confirmLive(log) {
-			log.Warn("live confirmation declined; aborting")
-			os.Exit(1)
-		}
+		log.Warn("configured for LIVE trading — orders stay simulated until you confirm in the web UI")
 	}
 
-	// Graceful shutdown on Ctrl-C / terminate.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Storage.
 	if err := os.MkdirAll(filepath.Dir(cfg.Storage.SQLitePath), 0o755); err != nil {
-		log.Error("create data dir failed", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("create data dir: %w", err)
 	}
 	store, err := sqlite.New(ctx, cfg.Storage.SQLitePath, log)
 	if err != nil {
-		log.Error("storage init failed", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("storage init: %w", err)
 	}
 	defer store.Close()
 
-	// Risk manager.
-	riskMgr := risk.NewManager(risk.Limits{
-		MaxDailyLoss:     cfg.Risk.MaxDailyLoss,
-		MaxOpenPositions: cfg.Risk.MaxOpenPositions,
-		MaxOrderValue:    cfg.Risk.MaxOrderValue,
-		MaxLotsPerTrade:  cfg.Risk.MaxLotsPerTrade,
-	})
-	log.Info("risk limits loaded",
-		"max_daily_loss", cfg.Risk.MaxDailyLoss,
-		"max_positions", cfg.Risk.MaxOpenPositions,
-		"max_order_value", cfg.Risk.MaxOrderValue,
-		"max_lots", cfg.Risk.MaxLotsPerTrade)
-
-	// Broker + market data wiring depends on mode.
-	var br broker.Broker
-	var paperBroker *broker.PaperBroker // non-nil for paper/dryrun, nil for live
-	var ticker *kite.Ticker
-	var instruments *kite.Instruments
-
-	switch cfg.Mode {
-	case config.ModeLive:
-		client, t, ins, err := connectKite(ctx, cfg, log)
-		if err != nil {
-			log.Error("kite setup failed", "err", err)
-			os.Exit(1)
-		}
-		br = broker.NewLiveBroker(client, log)
-		ticker, instruments = t, ins
-	case config.ModePaper:
-		client, t, ins, err := connectKite(ctx, cfg, log)
-		if err != nil {
-			log.Error("kite setup failed", "err", err)
-			os.Exit(1)
-		}
-		_ = client
-		paperBroker = broker.NewPaperBroker(nil, log)
-		br = paperBroker
-		ticker, instruments = t, ins
-	case config.ModeDryRun:
-		// No network. Use a paper broker so the engine has something to talk to;
-		// the strategy will idle (no instruments/spots to act on).
-		paperBroker = broker.NewPaperBroker(nil, log)
-		br = paperBroker
+	application, err := app.New(ctx, cfg, store, log)
+	if err != nil {
+		return fmt.Errorf("app init: %w", err)
 	}
 
-	engineOpts := []engine.Option{
-		engine.WithInstruments(instruments),
-		engine.WithTicker(ticker),
-		engine.WithStrategyConfigs(strategyConfigs(cfg)),
-	}
-	if paperBroker != nil {
-		engineOpts = append(engineOpts, engine.WithPaperBroker(paperBroker))
+	srv, err := web.New(application, log, web.Options{Dev: *dev})
+	if err != nil {
+		return fmt.Errorf("web init: %w", err)
 	}
 
-	eng := engine.New(br, store, riskMgr, cfg.Recording.Ticks, log, engineOpts...)
-
-	// Register strategies from config. Only the example is wired for v1.
-	for _, sc := range cfg.Strategies {
-		if !sc.Enabled {
-			continue
-		}
-		switch sc.Name {
-		case "short-straddle":
-			eng.AddStrategy(shortstraddle.New(sc.Name, log))
-		default:
-			log.Warn("unknown strategy in config; skipped", "name", sc.Name)
-		}
-	}
-
-	// Run until the context is canceled (signal or fatal error).
-	runErr := make(chan error, 1)
+	// Engine and HTTP server run as peers; whichever fails first stops the other.
+	errCh := make(chan error, 2)
 	go func() {
-		runErr <- eng.Start(ctx)
-	}()
-
-	select {
-	case err := <-runErr:
-		if err != nil && err != context.Canceled {
-			log.Error("engine exited with error", "err", err)
-			os.Exit(1)
+		err := application.Run(ctx)
+		if errors.Is(err, context.Canceled) {
+			err = nil
 		}
+		errCh <- err
+	}()
+	go func() { errCh <- srv.Start(ctx) }()
+
+	var runErr error
+	select {
+	case runErr = <-errCh:
+		cancel() // bring the other half down too
 	case <-ctx.Done():
 	}
 
 	log.Info("shutting down...")
-	eng.Stop(context.Background())
+
+	// Stop accepting HTTP first so no new orders can be submitted while
+	// strategies are being unwound.
+	shutdownCtx, done := context.WithTimeout(context.Background(), 15*time.Second)
+	defer done()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Warn("http shutdown", "err", err)
+	}
+	if err := application.Shutdown(shutdownCtx); err != nil {
+		log.Warn("app shutdown", "err", err)
+	}
 	log.Info("=== trading platform stopped ===")
+	return runErr
 }
 
-// connectKite authenticates with Kite, validates the token, and returns the
-// client plus a fresh ticker and the NFO instrument master. Used by both paper
-// and live modes (paper ignores the returned client for order placement).
-func connectKite(ctx context.Context, cfg *config.Config, log *slog.Logger) (*kite.Client, *kite.Ticker, *kite.Instruments, error) {
-	if cfg.Kite.AccessToken == "" {
-		fmt.Printf("Login first, then set the access token:\n  %s\n",
-			kite.New(cfg.Kite.APIKey, cfg.Kite.APISecret, "", cfg.Kite.BaseURL, nil).LoginURL())
-		return nil, nil, nil, fmt.Errorf("kite access token missing; complete login and set kite.access_token (or KITE_ACCESS_TOKEN env)")
-	}
-	client := kite.New(cfg.Kite.APIKey, cfg.Kite.APISecret, cfg.Kite.AccessToken, cfg.Kite.BaseURL, log)
-
-	// Validate the token so we fail fast on bad/expired credentials.
-	if prof, err := client.GetProfile(ctx); err != nil {
-		return nil, nil, nil, fmt.Errorf("kite auth check failed: %w", err)
-	} else {
-		log.Info("kite auth ok", "user", prof.UserID)
+// setWebPassword prompts for a password and writes its hash to the secrets file.
+func setWebPassword(secretsPath string) error {
+	p := config.ExpandPath(secretsPath)
+	if p == "" {
+		return errors.New("secrets_path is empty; set it in your config first")
 	}
 
-	instruments, err := loadInstruments(ctx, client, log)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	ticker := kite.NewTicker(cfg.Kite.APIKey, cfg.Kite.AccessToken, cfg.Kite.TickerURL, instruments, log)
-	return client, ticker, instruments, nil
-}
+	fmt.Println("Set the web UI password for this trading server.")
+	fmt.Println("NOTE: the password is echoed as you type — make sure nobody is looking.")
+	fmt.Print("Password: ")
 
-// loadInstruments fetches the NFO option chain master (options live here).
-func loadInstruments(ctx context.Context, client *kite.Client, log *slog.Logger) (*kite.Instruments, error) {
-	m, err := client.FetchInstrumentsExchange(ctx, "NFO")
-	if err != nil {
-		return nil, fmt.Errorf("fetch instruments: %w", err)
-	}
-	client.LogInstrumentsSummary(m)
-	return m, nil
-}
-
-// strategyConfigs converts the config's strategy slice into a name->config map.
-func strategyConfigs(cfg *config.Config) map[string]config.StrategyCfg {
-	out := make(map[string]config.StrategyCfg, len(cfg.Strategies))
-	for _, s := range cfg.Strategies {
-		out[s.Name] = s
-	}
-	return out
-}
-
-// confirmLive is the second safety gate: the operator must type the exact
-// phrase. Prevents accidental real-money trading.
-func confirmLive(log *slog.Logger) bool {
-	fmt.Println("\n" + strings.Repeat("!", 70))
-	fmt.Println("!!  LIVE TRADING MODE — REAL MONEY WILL BE AT RISK  !!")
-	fmt.Println("!!  Options can lose your entire capital fast.     !!")
-	fmt.Println(strings.Repeat("!", 70))
-	fmt.Print("\nTo proceed, type exactly: I UNDERSTAND\n> ")
 	scanner := bufio.NewScanner(os.Stdin)
 	if !scanner.Scan() {
-		return false
+		return errors.New("no password entered")
 	}
-	if scanner.Text() != "I UNDERSTAND" {
-		log.Warn("confirmation text did not match", "got", scanner.Text())
-		return false
+	pw := strings.TrimSpace(scanner.Text())
+	if len(pw) < 12 {
+		return errors.New("password must be at least 12 characters; this server can place real orders")
 	}
-	log.Warn("LIVE trading confirmed by operator")
-	return true
+	fmt.Print("Confirm:  ")
+	if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != pw {
+		return errors.New("passwords did not match")
+	}
+
+	hash, err := auth.HashPassword(pw)
+	if err != nil {
+		return err
+	}
+	if err := upsertSecretsWebHash(p, hash); err != nil {
+		return err
+	}
+	fmt.Printf("\npassword set in %s\n", p)
+	return nil
+}
+
+// upsertSecretsWebHash writes web.password_hash into the secrets file, creating
+// it if needed and replacing any existing value.
+//
+// The file is rewritten line-wise rather than through a YAML round-trip because
+// it is hand-maintained and comment-rich; marshalling it would silently discard
+// the operator's own notes.
+func upsertSecretsWebHash(path, hash string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create secrets dir: %w", err)
+	}
+
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read secrets: %w", err)
+	}
+
+	line := "  password_hash: \"" + hash + "\""
+	lines := strings.Split(strings.TrimRight(string(existing), "\n"), "\n")
+
+	var (
+		out        []string
+		inWeb      bool
+		replaced   bool
+		sawWebRoot bool
+	)
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		switch {
+		case trimmed == "web:":
+			inWeb, sawWebRoot = true, true
+			out = append(out, l)
+			continue
+		case inWeb && strings.HasPrefix(trimmed, "password_hash:"):
+			out = append(out, line)
+			replaced = true
+			continue
+		case l != "" && !strings.HasPrefix(l, " ") && !strings.HasPrefix(l, "#") && trimmed != "web:":
+			inWeb = false
+		}
+		out = append(out, l)
+	}
+
+	if !replaced {
+		if !sawWebRoot {
+			out = append(out, "", "# Web UI operator password (set by 'tradebot -set-password').", "web:")
+		}
+		out = append(out, line)
+	}
+
+	body := strings.TrimLeft(strings.Join(out, "\n"), "\n") + "\n"
+	// 0600: this file holds the credential to a system that can spend money.
+	return os.WriteFile(path, []byte(body), 0o600)
 }
 
 // writeSecretsTemplate creates the secrets file with 0600 permissions at the
@@ -268,10 +251,17 @@ func writeSecretsTemplate(secretsPath string) error {
 # Generated by 'tradebot -init-secrets'. Edit and fill in real values.
 # This file overrides config.yaml; env vars (KITE_API_KEY, KITE_API_SECRET,
 # KITE_ACCESS_TOKEN) override this file.
+#
+# access_token is optional: the web UI obtains one through the Zerodha browser
+# login and stores it in the database, refreshing it each trading day.
 kite:
   api_key: ""
   api_secret: ""
   access_token: ""
+
+# Web UI operator password. Set it with 'tradebot -set-password'.
+web:
+  password_hash: ""
 `
 	if err := os.WriteFile(p, []byte(tmpl), 0o600); err != nil {
 		return fmt.Errorf("write secrets: %w", err)
@@ -280,7 +270,6 @@ kite:
 }
 
 // credentialSource reports where the API key came from, for the startup log.
-// Env wins; then the secrets file; then config.yaml.
 func credentialSource(cfg *config.Config) string {
 	switch {
 	case os.Getenv("KITE_API_KEY") != "":

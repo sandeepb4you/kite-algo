@@ -8,7 +8,10 @@
 # Execution mode:
 #   dryrun : no credentials, no network. Boots and idles (smoke test).
 #   paper  : live market data, SIMULATED orders. Recommended for development.
-#   live   : REAL orders. Requires live_confirm: true AND typing "I UNDERSTAND".
+#   live   : REAL orders — and even then only after confirming in the web UI.
+#            Requires live_confirm: true below. The process still starts with a
+#            simulated broker; nothing reaches the exchange until you type
+#            "I UNDERSTAND" and re-enter your password in the UI.
 mode: dryrun
 
 # Logging. level: debug|info|warn|error. format: text|json
@@ -22,6 +25,10 @@ log:
 # PREFER keeping them in the secrets file (see secrets_path above) or env vars,
 # NOT here. The fields below are left empty by design — they're only a fallback.
 # Precedence (highest wins): env vars > secrets file > here.
+#
+# access_token is OPTIONAL. The web UI performs the Zerodha login for you and
+# stores the resulting token in the database, refreshing it each trading day.
+# Only set it here if you are scripting a setup without a browser.
 kite:
   api_key: ""
   api_secret: ""
@@ -29,8 +36,36 @@ kite:
   base_url: "https://api.kite.trade"
   ticker_url: "wss://ws.kite.trade"
 
-# SAFETY: must be true to even attempt live mode (plus interactive confirm).
+# SAFETY: must be true to even attempt live mode (plus confirmation in the UI).
 live_confirm: false
+
+# --- Web UI -------------------------------------------------------------------
+web:
+  # Listen address. Keep this on loopback and put a TLS-terminating reverse
+  # proxy (Caddy, or `tailscale serve`) in front — the app refuses to bind a
+  # routable address unless a password is set.
+  addr: "127.0.0.1:8080"
+
+  # The URL you actually reach this server on. Used to build the Zerodha
+  # redirect URL, which must be registered EXACTLY as <public_url>/kite/callback
+  # in your Kite Connect app at https://developers.kiteconnect.com/apps
+  # Zerodha matches it character for character and allows no wildcards.
+  public_url: "http://127.0.0.1:8080"
+
+  # Operator password hash. Do NOT write it here — run `tradebot -set-password`,
+  # which stores it in your secrets file instead.
+  password_hash: ""
+
+  # How long a browser login lasts.
+  session_ttl: 720h
+
+  # Read the client IP from X-Forwarded-For. Enable ONLY behind a proxy you
+  # control: otherwise anyone can spoof the header and defeat login lockout.
+  trust_proxy: false
+
+  # How often coalesced market-data frames are pushed to the browser. An option
+  # chain ticks far faster than a screen can be read; 200ms (~5/sec) is plenty.
+  tick_interval_ms: 200
 
 # Path to a YAML secrets file OUTSIDE the repo holding Kite credentials.
 # Default: ~/.trading/secrets.yaml (i.e. C:\Users\<you>\.trading\secrets.yaml).
