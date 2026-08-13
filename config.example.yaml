@@ -1,0 +1,70 @@
+# =============================================================================
+# Trading platform configuration.
+# Copy this file to config.yaml and edit. Secrets can also come from env vars
+# (KITE_API_KEY, KITE_API_SECRET, KITE_ACCESS_TOKEN), which override the values
+# here — preferred so credentials never sit in a checked-in file.
+# =============================================================================
+
+# Execution mode:
+#   dryrun : no credentials, no network. Boots and idles (smoke test).
+#   paper  : live market data, SIMULATED orders. Recommended for development.
+#   live   : REAL orders. Requires live_confirm: true AND typing "I UNDERSTAND".
+mode: dryrun
+
+# Logging. level: debug|info|warn|error. format: text|json
+log:
+  level: info
+  format: text
+
+# --- Zerodha Kite credentials -------------------------------------------------
+# Get these from https://developers.kiteconnect.com/apps (api_key/api_secret).
+#
+# PREFER keeping them in the secrets file (see secrets_path above) or env vars,
+# NOT here. The fields below are left empty by design — they're only a fallback.
+# Precedence (highest wins): env vars > secrets file > here.
+kite:
+  api_key: ""
+  api_secret: ""
+  access_token: ""
+  base_url: "https://api.kite.trade"
+  ticker_url: "wss://ws.kite.trade"
+
+# SAFETY: must be true to even attempt live mode (plus interactive confirm).
+live_confirm: false
+
+# Path to a YAML secrets file OUTSIDE the repo holding Kite credentials.
+# Default: ~/.trading/secrets.yaml (i.e. C:\Users\<you>\.trading\secrets.yaml).
+# Create it with: ./tradebot -init-secrets
+# Precedence (highest wins): env vars > secrets file > this config file.
+# Set to "" to disable loading a secrets file entirely.
+secrets_path: "~/.trading/secrets.yaml"
+
+# Record every tick to the database? This is HUGE (lakhs of rows/day) — leave
+# off unless you're collecting data for backtesting.
+recording:
+  ticks: false
+
+# SQLite database location. Directory is created if missing.
+storage:
+  sqlite_path: "./data/trading.db"
+
+# Pre-trade risk limits. Tune to your capital and risk appetite.
+risk:
+  max_daily_loss: 5000          # rupees: halt NEW entries when day PnL <= -this
+  max_open_positions: 5         # distinct open symbols
+  max_order_value: 100000       # rupees per single order (qty * price)
+  max_lots_per_trade: 1         # lots per order (1 lot NIFTY = 75, check current)
+
+# Strategy instances. Set enabled: true to activate.
+strategies:
+  - name: "short-straddle"
+    enabled: true
+    params:
+      index_symbol: "NIFTY 50"   # spot index to track (drives entry)
+      underlying: "NIFTY"        # option underlying to trade
+      strike_step: 50            # NIFTY grid (use 100 for BANKNIFTY)
+      lots: 1                    # lots per leg (1 = 75 qty for NIFTY)
+      exit_delta: 0.25           # square off when |net position delta| > this
+      risk_free_rate: 0.06       # annualized, for Black-Scholes
+      square_off_time: "15:15"   # flat by this IST time, regardless of delta
+      product: "MIS"             # MIS (intraday) or NRML

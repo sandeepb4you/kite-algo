@@ -1,0 +1,24 @@
+# Compiled binary
+/tradebot
+/tradebot.exe
+*.exe
+
+# Local config (contains secrets) and runtime data
+/config.yaml
+/data/
+
+# Real secrets file — MUST live outside the repo, but guard an in-repo one too
+/secrets.yaml
+**/secrets.yaml
+!secrets.example.yaml
+
+# Go workspace artifacts
+/vendor/
+
+# Test / smoke logs
+smoke.log
+*.log
+
+# OS junk
+.DS_Store
+Thumbs.db
