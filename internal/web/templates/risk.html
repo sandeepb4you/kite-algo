@@ -8,37 +8,63 @@
     terminal. Changes take effect on the next order; orders already with the
     broker are unaffected.
   </p>
+
+  {{if .Data.Overridden}}
+    <p class="alert alert-warn">
+      These limits were saved here and <b>override <code>config.yaml</code></b>.
+      They survive a restart. Reset below to return to the configured defaults.
+    </p>
+  {{else}}
+    <p class="muted small">
+      Currently using the defaults from <code>config.yaml</code>. Saving changes
+      here stores them in the database, so they survive a restart.
+    </p>
+  {{end}}
+
   <p class="muted small">
-    Set any limit to <code>0</code> to disable that check. Limits are held in
-    memory — they revert to <code>config.yaml</code> on restart.
+    Set any limit to <code>0</code> to disable that check.
+    <b>No limit ever blocks closing a position</b> — they cap the risk you take
+    on, never your ability to get out.
   </p>
 
   <form method="post" action="/api/risk/limits" data-result="#action-result"
-        data-confirm="Update the live risk limits?">
+        data-confirm="Save these risk limits? They will persist across restarts.">
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
 
     <label for="max_daily_loss">Max daily loss (₹)</label>
     <input id="max_daily_loss" name="max_daily_loss" type="number" step="any" min="0"
-           value="{{num .Data.MaxDailyLoss}}">
+           value="{{num .Data.Limits.MaxDailyLoss}}">
     <p class="muted small">
-      Blocks new entries once the day's P&amp;L falls below this. Closing orders
-      are always allowed — a loss limit must never trap you in a position.
+      Blocks new entries once the day's P&amp;L falls below this.
+      Default {{money .Data.Defaults.MaxDailyLoss}}.
     </p>
 
     <label for="max_order_value">Max order value (₹)</label>
     <input id="max_order_value" name="max_order_value" type="number" step="any" min="0"
-           value="{{num .Data.MaxOrderValue}}">
+           value="{{num .Data.Limits.MaxOrderValue}}">
+    <p class="muted small">Default {{money .Data.Defaults.MaxOrderValue}}.</p>
 
     <label for="max_lots_per_trade">Max lots per order</label>
     <input id="max_lots_per_trade" name="max_lots_per_trade" type="number" step="1" min="0"
-           value="{{.Data.MaxLotsPerTrade}}">
+           value="{{.Data.Limits.MaxLotsPerTrade}}">
+    <p class="muted small">Default {{.Data.Defaults.MaxLotsPerTrade}}.</p>
 
     <label for="max_open_positions">Max open positions</label>
     <input id="max_open_positions" name="max_open_positions" type="number" step="1" min="0"
-           value="{{.Data.MaxOpenPositions}}">
+           value="{{.Data.Limits.MaxOpenPositions}}">
+    <p class="muted small">Default {{.Data.Defaults.MaxOpenPositions}}.</p>
 
-    <button class="btn btn-primary" type="submit">Update limits</button>
+    <button class="btn btn-primary" type="submit">Save limits</button>
   </form>
+
+  {{if .Data.Overridden}}
+  <form method="post" action="/api/risk/reset" data-result="#action-result"
+        data-confirm="Discard the saved limits and return to config.yaml?"
+        class="inline">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <button class="btn btn-quiet btn-sm" type="submit">Reset to config defaults</button>
+  </form>
+  {{end}}
 
   <div id="action-result" aria-live="polite"></div>
 </div>

@@ -46,6 +46,20 @@ type WebSession struct {
 	IP        string
 }
 
+// SettingsStore persists operator settings that are changed at runtime and must
+// survive a restart.
+//
+// Values are opaque strings (JSON in practice) so a caller can evolve the shape
+// of a setting without a schema migration.
+type SettingsStore interface {
+	// GetSetting returns a stored value, reporting whether one exists. A missing
+	// setting is not an error: it means "use the configured default".
+	GetSetting(ctx context.Context, key string) (string, bool, error)
+	SetSetting(ctx context.Context, key, value string) error
+	// DeleteSetting removes an override, restoring the configured default.
+	DeleteSetting(ctx context.Context, key string) error
+}
+
 // SessionStore persists authentication state across process restarts.
 type SessionStore interface {
 	// Kite session (single row — there is one broker account)
@@ -86,4 +100,7 @@ type Store interface {
 
 	// Authentication state (Kite access token, browser sessions).
 	SessionStore
+
+	// Runtime-editable operator settings.
+	SettingsStore
 }

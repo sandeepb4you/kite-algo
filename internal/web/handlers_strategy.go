@@ -194,9 +194,20 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		"Trading resumed. Strategies stopped by the halt were NOT restarted — start them explicitly.")
 }
 
+// riskData drives the risk-limit editor.
+type riskData struct {
+	Limits     risk.Limits
+	Defaults   risk.Limits
+	Overridden bool
+}
+
 // handleRisk renders the risk-limit editor.
 func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {
-	s.renderPage(w, r, "risk.html", "Risk", s.app.Risk.Limits())
+	s.renderPage(w, r, "risk.html", "Risk", riskData{
+		Limits:     s.app.Risk.Limits(),
+		Defaults:   s.app.ConfiguredRiskLimits(),
+		Overridden: s.app.RiskOverridden(),
+	})
 }
 
 // handleSetRiskLimits applies edited limits at runtime.
@@ -236,16 +247,33 @@ func (s *Server) handleSetRiskLimits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.app.SetRiskLimits(next)
+	if err := s.app.SaveRiskLimits(r.Context(), next); err != nil {
+		// The limits are live either way; only persistence failed. Report that
+		// precisely rather than implying the change did not take.
+		s.log.Error("persist risk limits failed", "err", err)
+		s.actionResult(w, http.StatusOK, "error", err.Error())
+		return
+	}
 	s.log.Warn("risk limits changed from ui", "ip", s.clientIP(r))
 
-	msg := "Risk limits updated. They apply to the next order."
+	msg := "Risk limits updated and saved. They apply to the next order."
 	if loosened(current, next) {
 		// Loosening a limit is the change most likely to be regretted, so it is
 		// called out rather than acknowledged with a generic success message.
 		msg += " Note: you LOOSENED at least one limit."
 	}
 	s.actionResult(w, http.StatusOK, "ok", msg)
+}
+
+// handleResetRiskLimits discards the saved override and returns to config.yaml.
+func (s *Server) handleResetRiskLimits(w http.ResponseWriter, r *http.Request) {
+	if err := s.app.ResetRiskLimits(r.Context()); err != nil {
+		s.actionResult(w, http.StatusOK, "error", err.Error())
+		return
+	}
+	s.log.Warn("risk limits reset to config defaults", "ip", s.clientIP(r))
+	s.actionResult(w, http.StatusOK, "ok",
+		"Risk limits reset to the values in config.yaml.")
 }
 
 func loosened(before, after risk.Limits) bool {

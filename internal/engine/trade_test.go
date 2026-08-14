@@ -39,6 +39,13 @@ func (nullStore) GetWebSession(context.Context, string) (storage.WebSession, boo
 }
 func (nullStore) DeleteExpiredWebSessions(context.Context, time.Time) error { return nil }
 
+func (nullStore) SetSetting(context.Context, string, string) error { return nil }
+func (nullStore) DeleteSetting(context.Context, string) error      { return nil }
+
+func (nullStore) GetSetting(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
+
 // tradingEngine builds an engine backed by a paper broker with the given risk
 // limits, plus a tick function.
 //

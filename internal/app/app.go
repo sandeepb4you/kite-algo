@@ -54,6 +54,9 @@ type App struct {
 
 	mu       sync.RWMutex
 	liveMode bool // true once the live broker has been swapped in
+	// riskOverridden records that the active limits came from a saved override
+	// rather than config.yaml, so the UI can say which is in force.
+	riskOverridden bool
 }
 
 // Status is everything the UI header needs in one struct.
@@ -87,12 +90,25 @@ type Status struct {
 func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog.Logger) (*App, error) {
 	bus := events.NewBus(log)
 
-	riskMgr := risk.NewManager(risk.Limits{
-		MaxDailyLoss:     cfg.Risk.MaxDailyLoss,
-		MaxOpenPositions: cfg.Risk.MaxOpenPositions,
-		MaxOrderValue:    cfg.Risk.MaxOrderValue,
-		MaxLotsPerTrade:  cfg.Risk.MaxLotsPerTrade,
-	})
+	// config.yaml supplies the defaults; a saved override wins. Deleting the
+	// override restores the defaults, so there is always a way back to a known
+	// state without remembering the original numbers.
+	logf := func(format string, args ...any) {
+		if log != nil {
+			log.Warn(fmt.Sprintf(format, args...))
+		}
+	}
+	limits, overridden := loadRiskLimits(ctx, store, cfg, logf)
+	riskMgr := risk.NewManager(limits)
+
+	if log != nil {
+		log.Info("risk limits loaded",
+			"source", map[bool]string{true: "saved override", false: "config.yaml"}[overridden],
+			"max_daily_loss", limits.MaxDailyLoss,
+			"max_order_value", limits.MaxOrderValue,
+			"max_lots_per_trade", limits.MaxLotsPerTrade,
+			"max_open_positions", limits.MaxOpenPositions)
+	}
 
 	// Always start on the paper broker, whatever the configured mode. In live
 	// mode this is gate two of three: the process boots "armed but not
@@ -109,16 +125,17 @@ func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog
 
 	secure := !config.IsLoopbackAddr(cfg.Web.Addr)
 	a := &App{
-		Cfg:      cfg,
-		Log:      log,
-		Store:    store,
-		Bus:      bus,
-		Engine:   eng,
-		Risk:     riskMgr,
-		Sessions: auth.NewSessions(store, cfg.Web.SessionTTL, secure, log),
-		Guard:    auth.NewLoginGuard(),
-		paper:    paper,
-		bootAt:   time.Now(),
+		Cfg:            cfg,
+		Log:            log,
+		Store:          store,
+		Bus:            bus,
+		Engine:         eng,
+		Risk:           riskMgr,
+		Sessions:       auth.NewSessions(store, cfg.Web.SessionTTL, secure, log),
+		Guard:          auth.NewLoginGuard(),
+		paper:          paper,
+		bootAt:         time.Now(),
+		riskOverridden: overridden,
 	}
 	a.Kite = NewKiteSession(cfg, store, eng, bus, log)
 

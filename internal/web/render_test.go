@@ -74,7 +74,11 @@ func TestEveryTemplateRenders(t *testing.T) {
 				{Key: "underlying", Label: "Underlying", Kind: strategy.KindString, Default: "NIFTY"},
 			},
 		}},
-		{"risk.html", risk.Limits{MaxDailyLoss: 5000, MaxOrderValue: 100000, MaxLotsPerTrade: 1, MaxOpenPositions: 5}},
+		{"risk.html", riskData{
+			Limits:     risk.Limits{MaxDailyLoss: 7500, MaxOrderValue: 200000, MaxLotsPerTrade: 2, MaxOpenPositions: 8},
+			Defaults:   risk.Limits{MaxDailyLoss: 5000, MaxOrderValue: 100000, MaxLotsPerTrade: 1, MaxOpenPositions: 5},
+			Overridden: true,
+		}},
 		{"research.html", researchData{
 			Symbol: "NIFTY 50", Interval: "5minute", From: "2024-08-01", To: "2024-08-02",
 			Intervals: kite.Intervals, Snapshots: snapshotInfo{HaveToday: false, AsOf: "2024-08-01"},
@@ -415,6 +419,8 @@ func TestEmptyStateTemplatesRender(t *testing.T) {
 		{"strategies.html", strategyData{}},
 		{"research.html", researchData{Intervals: kite.Intervals}},
 		{"backtest.html", backtestData{Intervals: kite.Intervals}},
+		// Not overridden: the page must render the config-defaults branch too.
+		{"risk.html", riskData{}},
 		{"positions_fragment.html", dashboardData{}},
 		{"orders_fragment.html", tradeData{}},
 	}

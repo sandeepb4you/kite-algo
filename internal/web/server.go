@@ -100,6 +100,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /api/halt", page(s.handleHalt))
 	mux.Handle("POST /api/resume", page(s.handleResume))
 	mux.Handle("POST /api/risk/limits", page(s.handleSetRiskLimits))
+	mux.Handle("POST /api/risk/reset", page(s.handleResetRiskLimits))
 
 	mux.Handle("POST /api/orders", page(s.handlePlaceOrder))
 	mux.Handle("POST /api/orders/{id}/cancel", page(s.handleCancelOrder))

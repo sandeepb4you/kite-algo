@@ -35,6 +35,13 @@ func (nullStore) SaveWebSession(context.Context, storage.WebSession) error    { 
 func (nullStore) DeleteWebSession(context.Context, string) error              { return nil }
 func (nullStore) DeleteExpiredWebSessions(context.Context, time.Time) error   { return nil }
 
+func (nullStore) SetSetting(context.Context, string, string) error { return nil }
+func (nullStore) DeleteSetting(context.Context, string) error      { return nil }
+
+func (nullStore) GetSetting(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
+
 func (nullStore) GetKiteSession(context.Context) (storage.KiteSession, bool, error) {
 	return storage.KiteSession{}, false, nil
 }
