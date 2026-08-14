@@ -122,58 +122,19 @@ func (a *App) Run(ctx context.Context) error {
 	go a.Kite.Supervise(ctx)
 	go a.Sessions.GC(ctx, time.Hour)
 	go a.guardSweep(ctx)
-	go a.autoStartStrategies(ctx)
 	return a.Engine.Start(ctx)
 }
 
-// autoStartStrategies starts the strategies marked enabled in config.yaml.
+// Strategies are NEVER started automatically.
 //
-// It waits for a Zerodha session first: a strategy started without an
-// instrument master cannot resolve its option chain, so it would sit idle and
-// look broken. Once market data is up, config-enabled strategies come online by
-// themselves — which is what makes an unattended restart resume trading.
-func (a *App) autoStartStrategies(ctx context.Context) {
-	enabled := make([]config.StrategyCfg, 0, len(a.Cfg.Strategies))
-	for _, sc := range a.Cfg.Strategies {
-		if sc.Enabled {
-			enabled = append(enabled, sc)
-		}
-	}
-	if len(enabled) == 0 {
-		return
-	}
-
-	t := time.NewTicker(2 * time.Second)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if !a.Engine.HasMarketData() {
-				continue
-			}
-			for _, sc := range enabled {
-				if _, running := a.Engine.StrategyStatusByID(sc.Name); running {
-					continue
-				}
-				st, err := a.Engine.StartStrategy(ctx, engine.StrategySpec{
-					InstanceID: sc.Name,
-					Type:       sc.Name,
-					Params:     sc.Params,
-				})
-				if err != nil {
-					a.Log.Error("could not auto-start strategy from config",
-						"name", sc.Name, "err", err)
-					continue
-				}
-				a.Log.Info("auto-started strategy from config",
-					"name", sc.Name, "state", st.State)
-			}
-			return
-		}
-	}
-}
+// An earlier version auto-started anything marked enabled: true in config.yaml
+// once market data came up. That is the wrong default for something that places
+// orders — a restart, a redeploy, or a crash-loop would silently begin trading
+// with nobody watching, and the config flag is easy to leave set from a previous
+// session.
+//
+// config.yaml's strategy blocks are now purely a source of DEFAULT PARAMETERS
+// for the /strategies form. Starting one is always a deliberate click.
 
 // Shutdown stops strategies and releases resources.
 func (a *App) Shutdown(ctx context.Context) error {

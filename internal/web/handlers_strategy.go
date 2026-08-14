@@ -33,8 +33,7 @@ func (s *Server) strategyData() strategyData {
 
 // handleStrategiesFragment is the polled fallback for the strategy cards.
 func (s *Server) handleStrategiesFragment(w http.ResponseWriter, r *http.Request) {
-	v := pageView{Status: s.app.Status(), Data: s.strategyData()}
-	s.renderFragment(w, "strategies_fragment.html", v)
+	s.renderFragment(w, r, "strategies_fragment.html", s.strategyData())
 }
 
 // handleNewStrategy renders the configuration form for one strategy type.

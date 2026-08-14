@@ -1,8 +1,12 @@
-{{define "positions_fragment.html"}}{{template "positions_table" .}}{{end}}
+{{define "positions_fragment.html"}}{{template "positions_table" .Data.Positions}}{{end}}
 
 
+{{/* positions_table takes the position SLICE directly, not the enclosing page
+     view. Taking the whole view coupled the partial to one page's Data shape,
+     and every other page that reused it failed at render time — the kind of
+     break Go templates only reveal when the page is actually opened. */}}
 {{define "positions_table"}}
-{{if .Data.Positions}}
+{{if .}}
 <table class="grid-table">
   <thead>
     <tr>
@@ -11,7 +15,7 @@
     </tr>
   </thead>
   <tbody>
-  {{range .Data.Positions}}
+  {{range .}}
     <tr>
       <td>{{if .StrategyID}}{{.StrategyID}}{{else}}—{{end}}</td>
       <td class="mono">{{.TradingSymbol}}</td>

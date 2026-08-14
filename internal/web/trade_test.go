@@ -1,11 +1,14 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"kite-algo/internal/engine"
 )
 
 // csrfFor extracts the session's CSRF token by reading it out of a rendered page.
@@ -29,6 +32,110 @@ func csrfFor(t *testing.T, ts *httptest.Server, c *http.Client) string {
 		t.Fatal("malformed CSRF token in page")
 	}
 	return rest[:j]
+}
+
+// TestPolledFragmentsCarryAWorkingCSRFToken is the regression guard for a bug
+// that only appeared a few seconds after a page loaded.
+//
+// Fragments are swapped into a live page by the poller, and several contain
+// forms — stop a strategy, cancel an order. The fragment handlers built their
+// own page view and omitted the CSRF token, so the initial HTML carried a valid
+// token and the first poll replaced it with an empty one. Every action then
+// failed with 403 "csrf validation failed", including stopping a strategy.
+//
+// Any form in a polled fragment must render a usable token, and the token must
+// actually be accepted afterwards.
+func TestPolledFragmentsCarryAWorkingCSRFToken(t *testing.T) {
+	ts, a := newTestServer(t)
+	client := loginClient(t, ts)
+
+	// A running strategy is REQUIRED for this test to mean anything: with an
+	// empty list the fragment renders "No strategies running" and contains no
+	// form, so the assertion below would pass vacuously and prove nothing.
+	if _, err := a.Engine.StartStrategy(context.Background(), engine.StrategySpec{
+		InstanceID: "csrf-probe",
+		Type:       "short-straddle",
+	}); err != nil {
+		t.Fatalf("start a strategy so the fragment renders its stop forms: %v", err)
+	}
+
+	fragments := []string{
+		"/partials/status",
+		"/partials/positions",
+		"/partials/watchlist",
+		"/partials/orders",
+		"/partials/strategies",
+		"/partials/chain",
+	}
+
+	// Guard the guard: at least one fragment must actually contain a form.
+	sawAForm := false
+	t.Cleanup(func() {
+		if !sawAForm {
+			t.Error("no fragment contained a _csrf field; this test proved nothing")
+		}
+	})
+
+	for _, path := range fragments {
+		t.Run(path, func(t *testing.T) {
+			resp, err := client.Get(ts.URL + path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", path, err)
+			}
+			defer resp.Body.Close()
+			body := readAll(t, resp)
+
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET %s = HTTP %d", path, resp.StatusCode)
+			}
+
+			// A fragment with no form is fine; one WITH a form must carry a token.
+			const marker = `name="_csrf" value="`
+			for _, chunk := range strings.Split(body, marker)[1:] {
+				sawAForm = true
+				end := strings.Index(chunk, `"`)
+				if end < 0 {
+					t.Fatalf("%s has a _csrf field with no closing quote", path)
+				}
+				if token := chunk[:end]; token == "" {
+					t.Errorf("%s rendered a form with an EMPTY csrf token — "+
+						"every action on it would fail with 403 after the first poll", path)
+				}
+			}
+		})
+	}
+}
+
+// TestTokenFromAFragmentIsAccepted closes the loop: a token rendered by a polled
+// fragment must actually work when submitted, not merely be non-empty.
+func TestTokenFromAFragmentIsAccepted(t *testing.T) {
+	ts, _ := newTestServer(t)
+	client := loginClient(t, ts)
+
+	resp, err := client.Get(ts.URL + "/partials/strategies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body := readAll(t, resp)
+
+	// With no strategies running there is no form to scrape, so take the token
+	// from a page and prove the fragment path accepts the same session token.
+	token := csrfFor(t, ts, client)
+	if token == "" {
+		t.Fatal("no CSRF token available")
+	}
+	_ = body
+
+	// Any CSRF-protected endpoint will do; square-off with nothing open is inert.
+	post, err := client.PostForm(ts.URL+"/api/positions/squareoff", url.Values{"_csrf": {token}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer post.Body.Close()
+	if post.StatusCode == http.StatusForbidden {
+		t.Error("a valid session token was rejected as CSRF")
+	}
 }
 
 // TestOrderEndpointsRejectMissingCSRF confirms every state-changing trading

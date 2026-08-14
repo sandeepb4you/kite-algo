@@ -22,10 +22,17 @@
 
       <label for="symbol">Instrument</label>
       <input id="symbol" name="symbol" type="text" list="instrument-list"
+             value="{{.Data.TicketSymbol}}"
              autocomplete="off" spellcheck="false" required
-             placeholder="e.g. NIFTY24AUG24500CE">
+             placeholder="click a premium in the chain, or type a symbol">
       <datalist id="instrument-list"></datalist>
-      <p id="lot-hint" class="muted small">Lot size is resolved from the instrument master.</p>
+      <p id="lot-hint" class="muted small">
+        {{if .Data.TicketLot}}
+          Lot size {{.Data.TicketLot}} — 1 lot = {{.Data.TicketLot}} qty.
+        {{else}}
+          Lot size is resolved from the instrument master.
+        {{end}}
+      </p>
 
       <div class="row">
         <div>
@@ -82,12 +89,18 @@
   </section>
 
   <section class="card">
-    <h2>Watchlist</h2>
+    <h2>Option chain</h2>
+    <div data-poll="/partials/chain{{if .Data.Chain.Underlying}}?underlying={{.Data.Chain.Underlying}}&expiry={{.Data.Chain.Expiry.Format "2006-01-02"}}{{end}}"
+         data-poll-ms="15000">
+      {{template "option_chain" .}}
+    </div>
+
+    <h2 style="margin-top:24px">Watchlist</h2>
     {{template "watchlist_table" .Data}}
 
     <h2 style="margin-top:24px">Positions</h2>
     <div data-poll="/partials/positions" data-poll-ms="5000">
-      {{template "positions_table" .}}
+      {{template "positions_table" .Data.Positions}}
     </div>
 
     <form method="post" action="/api/positions/squareoff"

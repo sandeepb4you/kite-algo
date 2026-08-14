@@ -105,10 +105,8 @@ this builds cleanly on Windows out of the box.
 # 1. Get dependencies
 go mod download
 
-# 2. Copy the example config
+# 2. Optional: copy the example config and edit it
 cp config.example.yaml config.yaml
-
-# 3. Edit config.yaml — set mode, risk limits, strategy params.
 
 # 4. Put Kite credentials in a SECRETS FILE OUTSIDE the repo (recommended),
 #    so credentials never travel with the code:
@@ -116,6 +114,43 @@ go build -o tradebot ./cmd/trading
 ./tradebot -init-secrets          # writes a template to ~/.trading/secrets.yaml
 $EDITOR ~/.trading/secrets.yaml   # fill in api_key + api_secret (see below)
 ```
+
+### The config file is optional
+
+`config.yaml` is gitignored and **not required**. With no config file the
+platform runs on defaults plus `TRADING_*` environment variables, which is the
+usual shape for a container or a systemd unit:
+
+```bash
+TRADING_MODE=paper \
+TRADING_MAX_DAILY_LOSS=5000 \
+TRADING_MAX_ORDER_VALUE=100000 \
+./tradebot
+```
+
+| Variable | Overrides |
+|---|---|
+| `TRADING_MODE` | `dryrun` \| `paper` \| `live` |
+| `TRADING_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` |
+| `TRADING_WEB_ADDR` · `TRADING_PUBLIC_URL` | listen address, external URL |
+| `TRADING_SQLITE_PATH` · `TRADING_SECRETS_PATH` | file locations |
+| `TRADING_MAX_DAILY_LOSS` · `TRADING_MAX_ORDER_VALUE` | risk caps (rupees) |
+| `TRADING_MAX_LOTS_PER_TRADE` · `TRADING_MAX_OPEN_POSITIONS` | risk caps (counts) |
+| `TRADING_RECORD_TICKS` · `TRADING_TRUST_PROXY` | booleans |
+| `KITE_API_KEY` · `KITE_API_SECRET` · `KITE_ACCESS_TOKEN` | credentials |
+
+A file that is *missing* is fine; a file that is *malformed* is a hard error,
+because that means settings you wrote are being ignored.
+
+> **`live_confirm` has no environment override, deliberately.** Arming live
+> trading must be an edit to a file on the machine — not something a shell
+> profile, a CI job, or a stray `export` can flip. With no config file, live mode
+> cannot be armed at all.
+
+> ⚠️ **Watch the risk limits when running without a file.** `max_daily_loss` and
+> `max_order_value` have no defaults, and zero means *no limit*. Startup logs a
+> `RISK LIMITS DISABLED` warning listing exactly which checks are off. Set them
+> via the table above, or on the `/risk` page at runtime.
 
 ### Keeping credentials out of the repo
 
@@ -134,14 +169,22 @@ Disable the secrets file by setting `secrets_path: ""` in config.
 
 ### Setting the web password
 
-The UI is password-protected. Set it once:
+The UI is password-protected. Set it once, **in your own terminal** — the prompt
+needs a real TTY to hide what you type:
 
 ```bash
 ./tradebot -set-password        # writes a PBKDF2 hash into your secrets file
 ```
 
+Only the hash is stored; the plaintext never touches disk. Minimum 12 characters.
+
 The app refuses to bind anything but loopback until a password is set — an
 unauthenticated UI that can place orders is the worst failure mode here.
+
+> The secrets file is written with mode `0600`, which protects it on Linux and
+> macOS. **On Windows those bits are ignored** — NTFS inherits the parent
+> directory's ACL instead. For local development on Windows that is usually fine
+> (the file sits under your user profile), but it is not the same guarantee.
 
 ### Getting the access token
 
@@ -433,6 +476,10 @@ Server-rendered Go templates plus a small amount of vanilla JavaScript. **No
 frontend build step and no third-party JS** — the ~30 lines of fragment polling
 that would otherwise justify htmx live in `static/app.js`, and the page's CSP
 forbids loading anything from another origin.
+
+Go dependencies are kept to three: `gorilla/websocket` for the market-data
+socket, `modernc.org/sqlite` for CGO-free storage, and `golang.org/x/term` to
+hide the password prompt. Everything else is standard library.
 
 Market data reaches the browser over a WebSocket (`static/ws.js`), coalesced
 server-side to roughly 5 updates/sec per client — an option chain ticks far

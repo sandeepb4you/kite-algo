@@ -47,6 +47,35 @@ type Config struct {
 	Risk        RiskConfig    `yaml:"risk"`
 	Web         WebConfig     `yaml:"web"`
 	Strategies  []StrategyCfg `yaml:"strategies"`
+
+	// fileMissing records that no config file was found, so startup can say so
+	// rather than leaving the operator to wonder why their settings had no effect.
+	fileMissing bool
+}
+
+// FileMissing reports whether the config file was absent and defaults were used.
+func (c *Config) FileMissing() bool { return c.fileMissing }
+
+// DisabledRiskLimits names the risk checks currently switched off.
+//
+// A zero limit means "no limit", which is a legitimate choice but a dangerous
+// default to arrive at by accident — deleting a config file silently disables
+// the daily-loss and order-value caps, and nothing else would say so.
+func (c *Config) DisabledRiskLimits() []string {
+	var off []string
+	if c.Risk.MaxDailyLoss <= 0 {
+		off = append(off, "max_daily_loss")
+	}
+	if c.Risk.MaxOrderValue <= 0 {
+		off = append(off, "max_order_value")
+	}
+	if c.Risk.MaxOpenPositions <= 0 {
+		off = append(off, "max_open_positions")
+	}
+	if c.Risk.MaxLotsPerTrade <= 0 {
+		off = append(off, "max_lots_per_trade")
+	}
+	return off
 }
 
 // WebConfig controls the built-in web UI.
@@ -127,23 +156,44 @@ type StrategyCfg struct {
 // then applies environment-variable overrides. Returns an error if the config is
 // structurally invalid or fails safety checks.
 //
+// The config file is OPTIONAL. A missing one is not an error: the platform runs
+// on defaults plus environment variables, which is what a container or systemd
+// deployment usually wants. A file that exists but cannot be parsed IS an error,
+// because that means the operator wrote settings that are being ignored.
+//
 // Credential precedence (most specific wins):
 //
 //  1. environment variables (KITE_API_KEY / KITE_API_SECRET / KITE_ACCESS_TOKEN)
 //  2. secrets file (secrets_path, outside the repo — ~/.trading/secrets.yaml)
 //  3. this config file (config.yaml)
+//
+// Non-secret settings follow the same shape: TRADING_* environment variables
+// override the file. Note there is deliberately NO environment override for
+// live_confirm — arming live trading must be a deliberate edit to a file on the
+// machine, not something an exported variable can flip.
 func Load(path string) (*Config, error) {
+	c := &Config{}
+
 	data, err := os.ReadFile(path)
-	if err != nil {
+	switch {
+	case err == nil:
+		if err := yaml.Unmarshal(data, c); err != nil {
+			return nil, fmt.Errorf("parse config %s: %w", path, err)
+		}
+	case os.IsNotExist(err):
+		c.fileMissing = true // reported at startup so it is never a silent surprise
+	default:
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 
-	c := &Config{}
-	if err := yaml.Unmarshal(data, c); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
-	}
-
 	c.applyDefaults()
+
+	// The secrets path must be resolved BEFORE the secrets are read, or
+	// TRADING_SECRETS_PATH would be accepted and then silently ignored — the
+	// file would still be loaded from the default location.
+	if v := strings.TrimSpace(os.Getenv("TRADING_SECRETS_PATH")); v != "" {
+		c.SecretsPath = v
+	}
 	if err := c.loadSecrets(); err != nil {
 		return nil, err
 	}
@@ -266,9 +316,15 @@ func (c *Config) applyDefaults() {
 // app — Zerodha requires an exact match, with no wildcards.
 func (c *Config) KiteRedirectURL() string { return c.Web.PublicURL + "/kite/callback" }
 
-// applyEnvOverrides lets secrets come from the environment rather than the YAML
-// file. Env wins over file so a deploy can inject credentials safely.
+// applyEnvOverrides lets settings come from the environment rather than the YAML
+// file. Env wins over file so a deploy can inject configuration safely, and so
+// the platform is fully runnable with no config file at all.
+//
+// live_confirm is deliberately absent: arming live trading should require
+// editing a file on the machine, not exporting a variable that a shell profile,
+// a CI job, or a stray `export` could set.
 func (c *Config) applyEnvOverrides() {
+	// Credentials.
 	if v := os.Getenv("KITE_API_KEY"); v != "" {
 		c.Kite.APIKey = v
 	}
@@ -278,6 +334,78 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("KITE_ACCESS_TOKEN"); v != "" {
 		c.Kite.AccessToken = v
 	}
+
+	// Non-secret settings.
+	if v := os.Getenv("TRADING_MODE"); v != "" {
+		c.Mode = Mode(strings.ToLower(strings.TrimSpace(v)))
+	}
+	if v := os.Getenv("TRADING_LOG_LEVEL"); v != "" {
+		c.Log.Level = v
+	}
+	if v := os.Getenv("TRADING_SQLITE_PATH"); v != "" {
+		c.Storage.SQLitePath = v
+	}
+	if v := os.Getenv("TRADING_SECRETS_PATH"); v != "" {
+		c.SecretsPath = v
+	}
+	if v := os.Getenv("TRADING_WEB_ADDR"); v != "" {
+		c.Web.Addr = v
+	}
+	if v := os.Getenv("TRADING_PUBLIC_URL"); v != "" {
+		c.Web.PublicURL = strings.TrimRight(v, "/")
+	}
+	if v := os.Getenv("TRADING_RECORD_TICKS"); v != "" {
+		c.Recording.Ticks = isTruthy(v)
+	}
+	if v := os.Getenv("TRADING_TRUST_PROXY"); v != "" {
+		c.Web.TrustProxy = isTruthy(v)
+	}
+
+	// Risk limits, so a fileless deployment is not forced to run uncapped.
+	if v, ok := envFloat("TRADING_MAX_DAILY_LOSS"); ok {
+		c.Risk.MaxDailyLoss = v
+	}
+	if v, ok := envFloat("TRADING_MAX_ORDER_VALUE"); ok {
+		c.Risk.MaxOrderValue = v
+	}
+	if v, ok := envInt("TRADING_MAX_LOTS_PER_TRADE"); ok {
+		c.Risk.MaxLotsPerTrade = v
+	}
+	if v, ok := envInt("TRADING_MAX_OPEN_POSITIONS"); ok {
+		c.Risk.MaxOpenPositions = v
+	}
+}
+
+func isTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+func envFloat(name string) (float64, bool) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+func envInt(name string) (int, bool) {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // validate enforces safety invariants. Live mode without confirm, or live mode

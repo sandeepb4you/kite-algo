@@ -3,6 +3,9 @@ package web
 import (
 	"net/http"
 	"sort"
+	"strings"
+
+	"kite-algo/internal/broker"
 )
 
 // defaultWatchlist is what the market page streams before any user-defined
@@ -18,6 +21,7 @@ type quoteRow struct {
 
 type marketData struct {
 	Watchlist []quoteRow
+	Positions []broker.Position
 	Streaming bool
 }
 
@@ -29,27 +33,26 @@ func (s *Server) handleMarket(w http.ResponseWriter, r *http.Request) {
 	}
 	s.renderPage(w, r, "market.html", "Market", marketData{
 		Watchlist: s.watchlist(),
+		Positions: s.app.Engine.Positions(),
 		Streaming: s.app.Engine.HasMarketData(),
 	})
 }
 
 // handleWatchlistFragment is the polled fallback for the watchlist table.
 func (s *Server) handleWatchlistFragment(w http.ResponseWriter, r *http.Request) {
-	v := pageView{Status: s.app.Status(), Data: marketData{
+	s.renderFragment(w, r, "watchlist_fragment.html", marketData{
 		Watchlist: s.watchlist(),
 		Streaming: s.app.Engine.HasMarketData(),
-	}}
-	s.renderFragment(w, "watchlist_fragment.html", v)
+	})
 }
 
 // handlePositionsFragment is the polled fallback for the positions table.
 func (s *Server) handlePositionsFragment(w http.ResponseWriter, r *http.Request) {
-	v := pageView{Status: s.app.Status(), Data: dashboardData{
+	s.renderFragment(w, r, "positions_fragment.html", dashboardData{
 		Positions: s.app.Engine.Positions(),
 		Streaming: s.app.Engine.HasMarketData(),
 		Routing:   s.app.Engine.BrokerMode(),
-	}}
-	s.renderFragment(w, "positions_fragment.html", v)
+	})
 }
 
 // watchlist builds the quote rows, seeding prices from the engine's cache so a
@@ -85,7 +88,24 @@ func (s *Server) watchlist() []quoteRow {
 }
 
 // renderFragment writes a partial template with no surrounding document.
-func (s *Server) renderFragment(w http.ResponseWriter, tmpl string, v pageView) {
+//
+// It builds the SAME envelope as renderPage — critically including the CSRF
+// token. Fragments are swapped into a live page by the poller, and several of
+// them contain forms (stop a strategy, cancel an order). Rendering those without
+// a token produced a page that worked for a few seconds and then started
+// rejecting every action with 403: the initial HTML carried a valid token, and
+// the first poll replaced it with an empty one.
+//
+// Taking the request rather than a pre-built pageView is what makes that
+// impossible to forget at a call site.
+func (s *Server) renderFragment(w http.ResponseWriter, r *http.Request, tmpl string, data any) {
+	sess, _ := sessionFrom(r)
+	v := pageView{
+		Status: s.app.Status(),
+		CSRF:   sess.CSRFToken,
+		Nav:    strings.TrimPrefix(r.URL.Path, "/"),
+		Data:   data,
+	}
 	if err := s.render.Render(w, http.StatusOK, tmpl, v); err != nil {
 		s.log.Error("render fragment failed", "template", tmpl, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

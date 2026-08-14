@@ -3,9 +3,13 @@
 /tradebot.exe
 *.exe
 
-# Local config (contains secrets) and runtime data
-/config.yaml
+# Runtime data (the SQLite database and its WAL sidecars)
 /data/
+
+# config.yaml IS tracked. Keep it free of credentials: api_key, api_secret and
+# access_token belong in the secrets file below or in environment variables.
+# The kite: block in config.yaml is only a last-resort fallback and must stay
+# empty, or secrets will be committed.
 
 # Real secrets file — MUST live outside the repo, but guard an in-repo one too
 /secrets.yaml

@@ -7,20 +7,32 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"kite-algo/internal/broker"
 	"kite-algo/internal/engine"
 	"kite-algo/internal/risk"
 )
 
+// defaultChainUnderlying is what the terminal shows before you pick one.
+const defaultChainUnderlying = "NIFTY"
+
 // tradeData is the terminal page payload.
 type tradeData struct {
 	Watchlist []quoteRow
 	Positions []broker.Position
 	Orders    []broker.Order
+	Chain     engine.OptionChain
+	ChainErr  string
 	Streaming bool
 	Routing   string
 	LiveMode  bool
+
+	// TicketSymbol pre-fills the order ticket. Clicking a premium in the chain
+	// submits it as ?symbol=, so selecting a contract works entirely
+	// server-side — no JavaScript required.
+	TicketSymbol string
+	TicketLot    int
 }
 
 // handleTrade renders the manual trading terminal.
@@ -32,12 +44,18 @@ func (s *Server) handleTrade(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, r, "trade.html", "Terminal", s.tradeData(r))
 }
 
+// handleChainFragment is the polled fallback for the option chain.
+func (s *Server) handleChainFragment(w http.ResponseWriter, r *http.Request) {
+	s.renderFragment(w, r, "chain_fragment.html", s.tradeData(r))
+}
+
 func (s *Server) tradeData(r *http.Request) tradeData {
 	orders, err := s.app.Engine.OpenOrders(r.Context())
 	if err != nil {
 		s.log.Debug("fetch open orders failed", "err", err)
 	}
-	return tradeData{
+
+	d := tradeData{
 		Watchlist: s.watchlist(),
 		Positions: s.app.Engine.Positions(),
 		Orders:    orders,
@@ -45,12 +63,44 @@ func (s *Server) tradeData(r *http.Request) tradeData {
 		Routing:   s.app.Engine.BrokerMode(),
 		LiveMode:  s.app.LiveActive(),
 	}
+
+	// A contract picked from the chain arrives as ?symbol=.
+	if sym := strings.ToUpper(strings.TrimSpace(r.FormValue("symbol"))); sym != "" {
+		d.TicketSymbol = sym
+		d.TicketLot = s.app.Engine.LotSize(sym)
+	}
+
+	underlying := strings.ToUpper(strings.TrimSpace(r.FormValue("underlying")))
+	if underlying == "" {
+		underlying = defaultChainUnderlying
+	}
+	var expiry time.Time
+	if v := strings.TrimSpace(r.FormValue("expiry")); v != "" {
+		if t, err := time.ParseInLocation("2006-01-02", v, time.Local); err == nil {
+			expiry = t
+		}
+	}
+
+	chain, err := s.app.Engine.OptionChain(underlying, expiry, engine.DefaultChainDepth)
+	if err != nil {
+		d.ChainErr = err.Error()
+		d.Chain = chain // still carries the underlying/expiry lists for the selectors
+		return d
+	}
+	d.Chain = chain
+
+	// Stream exactly the contracts on screen. These are transient — closing the
+	// tab releases them — and Engine.Unsubscribe never touches a symbol a
+	// strategy pinned, so this cannot blind a running strategy.
+	if err := s.app.Engine.SubscribeTransient(chain.ChainSymbols()); err != nil {
+		s.log.Debug("subscribe option chain failed", "err", err)
+	}
+	return d
 }
 
 // handleOrdersFragment is the polled fallback for the order book.
 func (s *Server) handleOrdersFragment(w http.ResponseWriter, r *http.Request) {
-	v := pageView{Status: s.app.Status(), Data: s.tradeData(r)}
-	s.renderFragment(w, "orders_fragment.html", v)
+	s.renderFragment(w, r, "orders_fragment.html", s.tradeData(r))
 }
 
 // handlePlaceOrder submits a hand-entered order.

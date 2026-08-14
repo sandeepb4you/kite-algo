@@ -132,6 +132,80 @@ func (m *Instruments) Options(underlying string, minExpiry time.Time) []Instrume
 	return out
 }
 
+// Expiries returns the distinct option expiry dates for an underlying, soonest
+// first, excluding any that have already passed.
+//
+// Kite lists weeklies and monthlies together with no flag distinguishing them,
+// so this returns every expiry and lets the caller choose. For NIFTY the first
+// entry is normally the current week.
+func (m *Instruments) Expiries(underlying string, after time.Time) []time.Time {
+	underlying = strings.ToUpper(underlying)
+	seen := make(map[string]time.Time)
+
+	for _, inst := range m.bySymbol {
+		if !inst.IsOption() || inst.Name != underlying || inst.Expiry.IsZero() {
+			continue
+		}
+		// Compare on the date only: an expiry is valid for the whole of its last
+		// trading day, and dropping it at midnight would hide the contract
+		// everyone is actually trading that morning.
+		if !after.IsZero() && inst.Expiry.Before(after.Truncate(24*time.Hour)) {
+			continue
+		}
+		seen[inst.Expiry.Format("2006-01-02")] = inst.Expiry
+	}
+
+	out := make([]time.Time, 0, len(seen))
+	for _, t := range seen {
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
+	return out
+}
+
+// Chain returns every option for an underlying at one specific expiry, sorted
+// by strike.
+//
+// Unlike Options, which picks the nearest expiry itself, this takes the expiry
+// the caller chose — which is what an operator selecting "next week" needs.
+// Matching is on the calendar date, so a caller need not reproduce the exact
+// timestamp stored in the instrument master.
+func (m *Instruments) Chain(underlying string, expiry time.Time) []Instrument {
+	underlying = strings.ToUpper(underlying)
+	want := expiry.Format("2006-01-02")
+
+	var out []Instrument
+	for _, inst := range m.bySymbol {
+		if inst.IsOption() && inst.Name == underlying &&
+			inst.Expiry.Format("2006-01-02") == want {
+			out = append(out, *inst)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Strike != out[j].Strike {
+			return out[i].Strike < out[j].Strike
+		}
+		return out[i].InstrumentType < out[j].InstrumentType
+	})
+	return out
+}
+
+// Underlyings returns the distinct option underlyings in the master, sorted.
+func (m *Instruments) Underlyings() []string {
+	seen := make(map[string]struct{})
+	for _, inst := range m.bySymbol {
+		if inst.IsOption() && inst.Name != "" {
+			seen[inst.Name] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // FetchInstruments downloads the full instrument master CSV and parses it.
 // The file is large (~1-2 MB, tens of thousands of rows) so call this once at
 // startup and cache the result. Kite also publishes a per-exchange endpoint:

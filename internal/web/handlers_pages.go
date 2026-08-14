@@ -32,11 +32,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 // handleStatusFragment powers the header's htmx poll. This is the fallback that
 // keeps the UI honest when the WebSocket is unavailable.
 func (s *Server) handleStatusFragment(w http.ResponseWriter, r *http.Request) {
-	v := pageView{Status: s.app.Status()}
-	if err := s.render.Render(w, http.StatusOK, "status_fragment.html", v); err != nil {
-		s.log.Error("render status fragment failed", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-	}
+	s.renderFragment(w, r, "status_fragment.html", nil)
 }
 
 // handleHealth is an unauthenticated liveness and readiness probe.

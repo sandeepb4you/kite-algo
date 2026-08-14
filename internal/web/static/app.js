@@ -115,6 +115,68 @@
     });
   }
 
+  // --- option chain → order ticket ----------------------------------------
+  //
+  // Clicking a premium loads that contract into the ticket. Typing an option
+  // symbol by hand is both tedious and the easiest way to trade the wrong
+  // strike or the wrong expiry, since the symbols differ by a few characters.
+  //
+  // Delegated from the document so it keeps working after a poll replaces the
+  // chain markup.
+  function pickContract(cell) {
+    // The cell is a submit button carrying the symbol as its form value, so the
+    // page works without scripting. Read that same value here.
+    var symbol = cell.value || cell.getAttribute("data-pick");
+    if (!symbol) return false;
+
+    var input = document.getElementById("symbol");
+    if (!input) return false; // no ticket on this page: let the form submit
+    input.value = symbol;
+
+    // Show the lot size so the operator can see what one lot means here.
+    var hint = document.getElementById("lot-hint");
+    var lot = cell.getAttribute("data-lot");
+    if (hint && lot && lot !== "0") {
+      var lots = parseInt(document.getElementById("lots").value, 10) || 1;
+      hint.textContent = symbol + " · lot size " + lot + " · " +
+        lots + " lot(s) = " + lots * parseInt(lot, 10) + " qty";
+    }
+
+    document.querySelectorAll(".chain-cell.picked").forEach(function (el) {
+      el.classList.remove("picked");
+    });
+    cell.classList.add("picked");
+
+    // Bring the ticket into view on narrow screens, where the chain and the
+    // ticket are stacked rather than side by side.
+    if (window.innerWidth < 860) {
+      input.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    input.focus({ preventScroll: window.innerWidth >= 860 });
+    return true;
+  }
+
+  // Intercept the submit so the ticket fills without a page reload. If anything
+  // here fails to handle it, we do NOT preventDefault — the browser submits the
+  // form and the server fills the ticket instead. The feature degrades to a
+  // reload rather than to nothing.
+  document.addEventListener("click", function (ev) {
+    var cell = ev.target.closest ? ev.target.closest(".chain-cell") : null;
+    if (!cell) return;
+    if (pickContract(cell)) ev.preventDefault();
+  });
+
+  // The chain selectors submit their form on change, which the CSP forbids
+  // doing with an inline onchange attribute. A visible Load button is the
+  // no-JavaScript path; this just saves the extra click.
+  document.addEventListener("change", function (ev) {
+    var el = ev.target;
+    if (el && el.form && el.form.classList.contains("chain-controls") &&
+        (el.id === "underlying" || el.id === "expiry")) {
+      el.form.submit();
+    }
+  });
+
   // --- instrument typeahead -----------------------------------------------
 
   function wireSearch() {

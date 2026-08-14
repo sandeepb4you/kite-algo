@@ -90,7 +90,13 @@ risk:
   max_order_value: 100000       # rupees per single order (qty * price)
   max_lots_per_trade: 1         # lots per order (1 lot NIFTY = 75, check current)
 
-# Strategy instances. Set enabled: true to activate.
+# Strategy default parameters.
+#
+# Strategies are NEVER started automatically — you start them from the
+# /strategies page. These blocks only supply the defaults that page's form is
+# pre-filled with, so a restart or a crash-loop can never begin trading
+# unattended. `enabled` is retained for compatibility and has no effect on
+# startup.
 strategies:
   - name: "short-straddle"
     enabled: true

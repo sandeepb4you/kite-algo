@@ -74,6 +74,21 @@ func (c *Client) SetAccessToken(token string) {
 	c.accessToken = token
 }
 
+// authHeader builds the Authorization header value for an authenticated call.
+//
+// The format is "token api_key:access_token" — COLON separated. A space instead
+// of the colon is silently accepted by nothing: Kite rejects every authenticated
+// request with "authorization value should atleast be `api_key`:`access_token`"
+// (InputException, HTTP 400). That failure is easy to misread as a bad token,
+// because login itself still succeeds — GenerateSession authenticates with a
+// checksum, not this header, so the break only shows up on the first call after
+// logging in.
+//
+// Built in one place so the three call sites cannot drift apart again.
+func (c *Client) authHeader() string {
+	return "token " + c.apiKey + ":" + c.accessToken
+}
+
 // HasAccessToken reports whether a session token is configured.
 func (c *Client) HasAccessToken() bool { return c.accessToken != "" }
 
@@ -173,7 +188,7 @@ func (c *Client) doLimited(ctx context.Context, lim *ratelimiter.Limiter, method
 	}
 	req.Header.Set("X-Kite-Version", APIVersion)
 	if c.accessToken != "" {
-		req.Header.Set("Authorization", "token "+c.apiKey+" "+c.accessToken)
+		req.Header.Set("Authorization", c.authHeader())
 	}
 	if form != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -248,7 +263,7 @@ func (c *Client) rawGetBytes(ctx context.Context, path string) ([]byte, error) {
 	}
 	req.Header.Set("X-Kite-Version", APIVersion)
 	if c.accessToken != "" {
-		req.Header.Set("Authorization", "token "+c.apiKey+" "+c.accessToken)
+		req.Header.Set("Authorization", c.authHeader())
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -274,7 +289,7 @@ func (c *Client) postJSON(ctx context.Context, path string, payload []byte, v an
 	req.Header.Set("X-Kite-Version", APIVersion)
 	req.Header.Set("Content-Type", "application/json")
 	if c.accessToken != "" {
-		req.Header.Set("Authorization", "token "+c.apiKey+" "+c.accessToken)
+		req.Header.Set("Authorization", c.authHeader())
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

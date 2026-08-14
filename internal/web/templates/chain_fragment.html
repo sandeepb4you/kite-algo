@@ -1,0 +1,107 @@
+{{define "chain_fragment.html"}}{{template "option_chain" .}}{{end}}
+
+
+{{/* The chain is built as plain HTML forms — no inline handlers, no reliance on
+     JavaScript. Selecting an expiry or picking a contract is a GET submit that
+     the server answers, so it works even with scripting broken, and it cannot be
+     blocked by the page's CSP (which forbids inline script by design).
+
+     app.js layers instant, no-reload behaviour on top; it is an enhancement, not
+     the mechanism. */}}
+{{define "option_chain"}}
+{{$c := .Data.Chain}}
+{{$exp := $c.Expiry.Format "2006-01-02"}}
+
+<form method="get" action="/trade" class="chain-controls">
+  <label for="underlying">Underlying</label>
+  <select id="underlying" name="underlying">
+    {{if not $c.Underlyings}}<option value="{{$c.Underlying}}">{{$c.Underlying}}</option>{{end}}
+    {{range $c.Underlyings}}
+      <option value="{{.}}" {{if eq . $c.Underlying}}selected{{end}}>{{.}}</option>
+    {{end}}
+  </select>
+
+  <label for="expiry">Expiry</label>
+  <select id="expiry" name="expiry">
+    {{range $c.Expiries}}
+      {{/* The nearest expiry is the current week for NIFTY — what a weekly
+           trader wants selected by default. */}}
+      <option value="{{.Format "2006-01-02"}}" {{if eq (.Format "2006-01-02") $exp}}selected{{end}}>
+        {{.Format "Mon 02 Jan"}}
+      </option>
+    {{end}}
+  </select>
+
+  <button class="btn btn-quiet btn-sm" type="submit">Load</button>
+
+  {{if $c.Spot}}
+    <span class="muted small">
+      {{$c.SpotSymbol}} <b class="mono" data-ltp="{{$c.SpotSymbol}}">{{num $c.Spot}}</b>
+      · ATM {{num $c.ATMStrike}}
+    </span>
+  {{end}}
+</form>
+
+{{if .Data.ChainErr}}
+  <p class="alert alert-warn">{{.Data.ChainErr}}</p>
+{{else if $c.Rows}}
+
+{{/* Each premium is a real submit button carrying its symbol. With scripting
+     off this reloads /trade with the contract loaded into the ticket; with
+     scripting on, app.js intercepts and fills the ticket in place. */}}
+<form method="get" action="/trade" class="chain-form">
+  <input type="hidden" name="underlying" value="{{$c.Underlying}}">
+  <input type="hidden" name="expiry" value="{{$exp}}">
+
+  <table class="grid-table chain">
+    <thead>
+      <tr>
+        <th colspan="2" class="c call-side">CALLS</th>
+        <th class="c">Strike</th>
+        <th colspan="2" class="c put-side">PUTS</th>
+      </tr>
+      <tr>
+        <th class="r">Pos</th><th class="r">LTP</th>
+        <th></th>
+        <th class="r">LTP</th><th class="r">Pos</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range $c.Rows}}
+      <tr class="{{if .IsATM}}atm-row{{end}}">
+        <td class="r mono muted">{{if .Call.Held}}{{.Call.Held}}{{end}}</td>
+        <td class="r p0">
+          <button type="submit" name="symbol" value="{{.Call.TradingSymbol}}"
+                  class="chain-cell"
+                  data-lot="{{.Call.LotSize}}"
+                  title="{{.Call.TradingSymbol}} — load into the ticket">
+            <span data-ltp="{{.Call.TradingSymbol}}">{{num .Call.LastPrice}}</span>
+          </button>
+        </td>
+
+        <td class="c mono strike">{{num .Strike}}{{if .IsATM}} <span class="atm-tag">ATM</span>{{end}}</td>
+
+        <td class="r p0">
+          <button type="submit" name="symbol" value="{{.Put.TradingSymbol}}"
+                  class="chain-cell"
+                  data-lot="{{.Put.LotSize}}"
+                  title="{{.Put.TradingSymbol}} — load into the ticket">
+            <span data-ltp="{{.Put.TradingSymbol}}">{{num .Put.LastPrice}}</span>
+          </button>
+        </td>
+        <td class="r mono muted">{{if .Put.Held}}{{.Put.Held}}{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</form>
+
+<p class="muted small">
+  Click any premium to load that contract into the ticket.
+  {{if $c.Truncated}}Showing {{len $c.Rows}} strikes around the money.{{end}}
+  {{if not .Data.Streaming}}<b class="warn">Market data is not streaming — prices are last known.</b>{{end}}
+</p>
+{{else}}
+  <p class="muted">No contracts found for this expiry.</p>
+{{end}}
+{{end}}

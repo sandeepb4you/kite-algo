@@ -3,6 +3,8 @@ package engine
 import (
 	"slices"
 	"testing"
+
+	"kite-algo/internal/events"
 )
 
 // newTestEngine builds a bare Engine with no broker, ticker, or storage — the
@@ -14,6 +16,11 @@ func newTestEngine() *Engine {
 		liveSeen: make(map[string]int),
 		wanted:   make(map[string]struct{}),
 		pinned:   make(map[string]struct{}),
+		handles:  make(map[string]*strategyHandle),
+		// Nop rather than nil: the publisher is on the hot path and is called
+		// without a nil check, so a bare struct literal would panic on the first
+		// tick. New() sets this; anything constructing an Engine directly must too.
+		pub: events.Nop{},
 	}
 }
 

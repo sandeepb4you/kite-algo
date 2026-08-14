@@ -33,6 +33,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"kite-algo/internal/app"
 	"kite-algo/internal/auth"
 	"kite-algo/internal/config"
@@ -82,6 +84,18 @@ func run() error {
 	log.Info("=== trading platform starting ===",
 		"mode", cfg.Mode, "pid", os.Getpid(),
 		"secrets_path", config.ExpandPath(cfg.SecretsPath))
+
+	if cfg.FileMissing() {
+		log.Info("no config file found; running on defaults and TRADING_* environment variables",
+			"looked_for", *configPath)
+	}
+	// A zero limit means "no limit". That is a legitimate choice, but arriving at
+	// it by deleting a config file is not — so say it out loud every start.
+	if off := cfg.DisabledRiskLimits(); len(off) > 0 {
+		log.Warn("RISK LIMITS DISABLED — these checks will not block any order",
+			"disabled", off,
+			"fix", "set them in config.yaml, via TRADING_MAX_* env vars, or on the /risk page")
+	}
 	if cfg.HasCredentials() {
 		log.Info("kite credentials loaded", "source", credentialSource(cfg))
 	} else if cfg.Mode != config.ModeDryRun {
@@ -155,19 +169,19 @@ func setWebPassword(secretsPath string) error {
 	}
 
 	fmt.Println("Set the web UI password for this trading server.")
-	fmt.Println("NOTE: the password is echoed as you type — make sure nobody is looking.")
-	fmt.Print("Password: ")
 
-	scanner := bufio.NewScanner(os.Stdin)
-	if !scanner.Scan() {
-		return errors.New("no password entered")
+	pw, err := readSecret("Password: ")
+	if err != nil {
+		return err
 	}
-	pw := strings.TrimSpace(scanner.Text())
 	if len(pw) < 12 {
 		return errors.New("password must be at least 12 characters; this server can place real orders")
 	}
-	fmt.Print("Confirm:  ")
-	if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != pw {
+	confirm, err := readSecret("Confirm:  ")
+	if err != nil {
+		return err
+	}
+	if confirm != pw {
 		return errors.New("passwords did not match")
 	}
 
@@ -180,6 +194,48 @@ func setWebPassword(secretsPath string) error {
 	}
 	fmt.Printf("\npassword set in %s\n", p)
 	return nil
+}
+
+// readSecret prompts for a secret without echoing it.
+//
+// Echoing a credential to the terminal leaves it in scrollback, in screen
+// shares, and in any transcript of the session — for a password that unlocks
+// order placement, that is not acceptable. When stdin is not a terminal (a pipe,
+// or a test), it falls back to a plain read, which is the only thing possible
+// there and is fine because nothing is being displayed.
+func readSecret(prompt string) (string, error) {
+	fmt.Print(prompt)
+
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		b, err := term.ReadPassword(fd)
+		fmt.Println() // ReadPassword swallows the newline the user typed
+		if err != nil {
+			return "", fmt.Errorf("read password: %w", err)
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+
+	line, err := stdinReader().ReadString('\n')
+	if err != nil && line == "" {
+		return "", errors.New("no password entered")
+	}
+	return strings.TrimSpace(line), nil
+}
+
+// stdin is a single shared buffered reader.
+//
+// It must be shared: a bufio reader reads ahead, so constructing a fresh one per
+// prompt lets the first read swallow the second line and the confirmation then
+// sees EOF. That only shows up on piped input, which is exactly how the tests
+// and any scripted setup drive this.
+var stdin *bufio.Reader
+
+func stdinReader() *bufio.Reader {
+	if stdin == nil {
+		stdin = bufio.NewReader(os.Stdin)
+	}
+	return stdin
 }
 
 // upsertSecretsWebHash writes web.password_hash into the secrets file, creating
