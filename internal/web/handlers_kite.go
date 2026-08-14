@@ -87,6 +87,9 @@ type pageView struct {
 	CSRF   string
 	Nav    string
 	Data   any
+	// Build versions the static asset URLs so a changed stylesheet or script is
+	// never served from a stale cache.
+	Build string
 
 	// Error page fields.
 	ErrTitle  string
@@ -102,6 +105,7 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, tmpl, title 
 		CSRF:   sess.CSRFToken,
 		Nav:    strings.TrimPrefix(r.URL.Path, "/"),
 		Data:   data,
+		Build:  buildID,
 	}
 	if err := s.render.Render(w, http.StatusOK, tmpl, v); err != nil {
 		s.log.Error("render failed", "template", tmpl, "err", err)
@@ -117,6 +121,7 @@ func (s *Server) renderError(w http.ResponseWriter, r *http.Request, status int,
 		Title:     title,
 		Status:    s.app.Status(),
 		CSRF:      sess.CSRFToken,
+		Build:     buildID,
 		ErrTitle:  title,
 		ErrDetail: detail,
 	}

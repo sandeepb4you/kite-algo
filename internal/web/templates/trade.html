@@ -7,8 +7,8 @@
 </p>
 {{end}}
 
-<div class="cols">
-  <section class="card">
+<div class="cols-3">
+  <section class="card col-ticket">
     <h2>Order ticket</h2>
 
     {{/* In live mode the ticket demands an extra deliberate confirmation. In
@@ -34,23 +34,29 @@
         {{end}}
       </p>
 
+      {{/* Side is a two-state toggle rather than a dropdown: it is the field
+           most likely to be wrong, and a dropdown shows the wrong value just as
+           calmly as the right one. Radio inputs keep it working without
+           JavaScript and keyboard-navigable with arrow keys. */}}
+      <label>Side</label>
+      <div class="side-toggle">
+        <input type="radio" name="side" id="side-buy" value="BUY" checked>
+        <label for="side-buy" class="side-buy">BUY</label>
+        <input type="radio" name="side" id="side-sell" value="SELL">
+        <label for="side-sell" class="side-sell">SELL</label>
+      </div>
+      <p class="muted small hint">
+        Click to choose a side · <b>double-click to send</b>
+        {{if .Data.LiveMode}} — live orders still ask for confirmation{{end}}
+      </p>
+
       <div class="row">
-        <div>
-          <label for="side">Side</label>
-          <select id="side" name="side">
-            <option value="BUY">BUY</option>
-            <option value="SELL">SELL</option>
-          </select>
-        </div>
         <div>
           <label for="lots">Lots</label>
           {{/* Quantity is lots, never a raw share count: typing a bare quantity
                is the classic route to an order 75x larger than intended. */}}
           <input id="lots" name="lots" type="number" min="1" step="1" value="1" required>
         </div>
-      </div>
-
-      <div class="row">
         <div>
           <label for="order_type">Type</label>
           <select id="order_type" name="order_type">
@@ -60,16 +66,16 @@
             <option value="SL-M">SL-M</option>
           </select>
         </div>
-        <div>
-          <label for="product">Product</label>
-          <select id="product" name="product">
-            <option value="MIS">MIS (intraday)</option>
-            <option value="NRML">NRML (overnight)</option>
-          </select>
-        </div>
       </div>
 
       <div class="row">
+        <div>
+          <label for="product">Product</label>
+          <select id="product" name="product">
+            <option value="MIS">MIS</option>
+            <option value="NRML">NRML</option>
+          </select>
+        </div>
         <div>
           <label for="price">Limit price</label>
           <input id="price" name="price" type="number" step="0.05" min="0" placeholder="—">
@@ -88,69 +94,99 @@
     <div id="order-result" aria-live="polite"></div>
   </section>
 
-  <section class="card">
+  <section class="card col-chain">
     <h2>Option chain</h2>
     <div data-poll="/partials/chain{{if .Data.Chain.Underlying}}?underlying={{.Data.Chain.Underlying}}&expiry={{.Data.Chain.Expiry.Format "2006-01-02"}}{{end}}"
          data-poll-ms="15000">
       {{template "option_chain" .}}
     </div>
+  </section>
 
-    <h2 style="margin-top:24px">Watchlist</h2>
-    {{template "watchlist_table" .Data}}
+  {{/* Positions and open orders stack in the third column so the whole trading
+       loop — pick, size, send, watch, close — is visible at once without
+       scrolling. Losing sight of an open position while placing the next order
+       is how you end up doubled up by accident. */}}
+  {{/* Positions and orders share one panel, switched by tabs.
 
-    <h2 style="margin-top:24px">Positions</h2>
-    <div data-poll="/partials/positions" data-poll-ms="5000">
-      {{template "positions_table" .Data.Positions}}
+       The tabs are hidden radio inputs driven purely by CSS :checked — no
+       JavaScript, so switching cannot be broken by a script error or the CSP.
+       The radios sit OUTSIDE the polled regions, so a background refresh never
+       throws you back to the other tab mid-glance. */}}
+  <section class="card col-book tabs">
+    <input class="tab-radio" type="radio" name="book" id="tab-positions" checked>
+    <input class="tab-radio" type="radio" name="book" id="tab-orders">
+
+    <div class="tab-bar" role="tablist">
+      <label for="tab-positions" class="tab">
+        Positions <span class="badge" data-count-of="#panel-positions">{{len .Data.Positions}}</span>
+      </label>
+      <label for="tab-orders" class="tab">
+        Orders <span class="badge" data-count-of="#panel-orders">{{len .Data.Orders}}</span>
+      </label>
     </div>
 
-    <form method="post" action="/api/positions/squareoff"
-          data-confirm="Square off EVERY open position at market. Continue?"
-          data-result="#order-result" class="inline">
-      <input type="hidden" name="_csrf" value="{{.CSRF}}">
-      <button class="btn btn-danger" type="submit">Square off everything</button>
-    </form>
+    <div id="panel-positions" class="tab-panel panel-positions">
+      <div data-poll="/partials/positions" data-poll-ms="5000">
+        {{template "positions_table" (posview .Data.Positions .CSRF)}}
+      </div>
+      {{/* Outside the polled div: a refresh would otherwise wipe the button. */}}
+      <form method="post" action="/api/positions/squareoff"
+            data-confirm="Square off EVERY open position at market. Continue?"
+            data-result="#order-result" class="inline">
+        <input type="hidden" name="_csrf" value="{{.CSRF}}">
+        <button class="btn btn-danger btn-sm" type="submit">Square off everything</button>
+      </form>
+    </div>
+
+    <div id="panel-orders" class="tab-panel panel-orders">
+      <div data-poll="/partials/orders" data-poll-ms="4000">
+        {{template "orders_table" .}}
+      </div>
+    </div>
   </section>
 </div>
 
-<section class="card">
-  <h2>Open orders</h2>
-  <div data-poll="/partials/orders" data-poll-ms="4000">
-    {{template "orders_table" .}}
-  </div>
-</section>
+{{/* No watchlist here: the option chain already shows every contract you are
+     working with, and the index spot sits in the chain header. The watchlist
+     lives on /market for anyone who wants it. */}}
 
 {{template "foot" .}}
 {{end}}
 
 
+{{/* Compact for the narrow book column: the essentials in columns, the rest as
+     secondary text under the symbol. */}}
 {{define "orders_table"}}
 {{if .Data.Orders}}
-<table class="grid-table">
+<table class="grid-table orders">
   <thead>
     <tr>
-      <th>Symbol</th><th>Side</th><th>Type</th>
-      <th class="r">Qty</th><th class="r">Filled</th><th class="r">Price</th>
-      <th>Status</th><th>Mode</th><th></th>
+      <th>Instrument</th>
+      <th class="r">Qty</th>
+      <th class="r">Price</th>
+      <th></th>
     </tr>
   </thead>
   <tbody>
   {{range .Data.Orders}}
     <tr>
-      <td class="mono">{{.TradingSymbol}}</td>
-      <td class="{{if eq (printf "%s" .Side) "BUY"}}pnl-up{{else}}pnl-down{{end}}">{{.Side}}</td>
-      <td>{{.OrderType}}</td>
-      <td class="r mono">{{.Quantity}}</td>
-      <td class="r mono">{{.FilledQuantity}}</td>
-      <td class="r mono">{{if .Price}}{{num .Price}}{{else}}MKT{{end}}</td>
-      <td>{{.Status}}</td>
-      {{/* Every row states which broker handled it, so a day that mixed paper
-           and live is unambiguous after the fact. */}}
-      <td><span class="chip chip-{{if eq .Mode "live"}}bad{{else}}ok{{end}}">{{upper .Mode}}</span></td>
       <td>
+        <span class="mono sym">{{.TradingSymbol}}</span>
+        <span class="sub">
+          <b class="{{if eq (printf "%s" .Side) "BUY"}}pnl-up{{else}}pnl-down{{end}}">{{.Side}}</b>
+          · {{.OrderType}} · {{.Status}}
+          {{/* Which broker handled it, so a day that mixed paper and live is
+               unambiguous after the fact. */}}
+          · {{upper .Mode}}
+        </span>
+      </td>
+      <td class="r mono">{{.FilledQuantity}}/{{.Quantity}}</td>
+      <td class="r mono">{{if .Price}}{{num .Price}}{{else}}MKT{{end}}</td>
+      <td class="r">
         <form method="post" action="/api/orders/{{.ID}}/cancel"
               data-result="#order-result" class="inline">
           <input type="hidden" name="_csrf" value="{{$.CSRF}}">
-          <button class="btn btn-quiet btn-sm" type="submit">Cancel</button>
+          <button class="btn btn-quiet btn-sm" type="submit">✕</button>
         </form>
       </td>
     </tr>

@@ -18,6 +18,7 @@ import (
 
 	"kite-algo/internal/auth"
 	"kite-algo/internal/broker"
+	"kite-algo/internal/charges"
 	"kite-algo/internal/config"
 	"kite-algo/internal/engine"
 	"kite-algo/internal/events"
@@ -48,20 +49,31 @@ type App struct {
 
 	bootAt time.Time
 
+	// margins caches the account balance fetched from Zerodha.
+	margins marginCache
+
 	mu       sync.RWMutex
 	liveMode bool // true once the live broker has been swapped in
 }
 
 // Status is everything the UI header needs in one struct.
 type Status struct {
-	Mode        config.Mode      `json:"mode"`
-	LiveArmed   bool             `json:"live_armed"`  // configured for live, awaiting confirmation
-	LiveActive  bool             `json:"live_active"` // real orders are being routed
-	Kite        SessionInfo      `json:"kite"`
-	Streaming   bool             `json:"streaming"`
-	BootAt      time.Time        `json:"boot_at"`
-	Uptime      string           `json:"uptime"`
-	DayPnL      float64          `json:"day_pnl"`
+	Mode       config.Mode `json:"mode"`
+	LiveArmed  bool        `json:"live_armed"`  // configured for live, awaiting confirmation
+	LiveActive bool        `json:"live_active"` // real orders are being routed
+	Kite       SessionInfo `json:"kite"`
+	Streaming  bool        `json:"streaming"`
+	BootAt     time.Time   `json:"boot_at"`
+	Uptime     string      `json:"uptime"`
+	DayPnL     float64     `json:"day_pnl"`
+	// DayCharges is the session's ESTIMATED transaction cost, modelled from the
+	// published rate card. Zerodha exposes no real-time charges API; the
+	// authoritative figures arrive on the contract note after the close.
+	DayCharges charges.Breakdown `json:"day_charges"`
+	// NetPnL is DayPnL less estimated charges — the figure that decides whether
+	// a session actually made money.
+	NetPnL      float64          `json:"net_pnl"`
+	Margins     Margins          `json:"margins"`
 	RiskLimits  risk.Limits      `json:"risk_limits"`
 	Halt        engine.HaltState `json:"halt"`
 	RedirectURL string           `json:"redirect_url"`
@@ -122,6 +134,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.Kite.Supervise(ctx)
 	go a.Sessions.GC(ctx, time.Hour)
 	go a.guardSweep(ctx)
+	go a.marginLoop(ctx)
 	return a.Engine.Start(ctx)
 }
 
@@ -150,6 +163,7 @@ func (a *App) Status() Status {
 	a.mu.RUnlock()
 
 	info := a.Kite.Snapshot()
+	chargesToday := a.Engine.DayCharges()
 	return Status{
 		Mode:        a.Cfg.Mode,
 		LiveArmed:   a.Cfg.Mode == config.ModeLive && !live,
@@ -159,6 +173,9 @@ func (a *App) Status() Status {
 		BootAt:      a.bootAt,
 		Uptime:      time.Since(a.bootAt).Round(time.Second).String(),
 		DayPnL:      a.Engine.DayPnL(),
+		DayCharges:  chargesToday,
+		NetPnL:      a.Engine.DayPnL() - chargesToday.Total,
+		Margins:     a.margins.get(),
 		RiskLimits:  a.Risk.Limits(),
 		Halt:        a.Engine.HaltState(),
 		RedirectURL: a.Cfg.KiteRedirectURL(),

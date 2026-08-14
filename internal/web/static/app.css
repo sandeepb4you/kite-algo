@@ -25,7 +25,9 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* A trading screen is read at a glance, not like prose. Denser type fits the
+     chain, the ticket and the book on one screen without scrolling. */
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 body.centered {
@@ -72,7 +74,33 @@ html[data-live="true"] body { box-shadow: inset 0 0 0 3px var(--live); }
 .topbar nav a:hover, .topbar nav a.on { color: var(--text); background: var(--panel-2); }
 .spacer { flex: 1; }
 
-main { padding: 20px 16px; max-width: 1200px; margin: 0 auto; }
+/* Account figures in the header. */
+.account { display: flex; align-items: center; gap: 18px; }
+.acct { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
+.acct-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+/* Marks a modelled figure, so it is never read as a settled one. */
+.est {
+  margin-left: 3px;
+  padding: 0 3px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 8.5px;
+  letter-spacing: 0;
+}
+@media (max-width: 1000px) {
+  /* Keep P&L, drop the balances, rather than wrapping the header onto two rows. */
+  .acct:not(:last-child) { display: none; }
+}
+
+/* Wide enough for the terminal's three columns on a normal monitor. Reading-heavy
+   pages constrain themselves with .card-form, so this does not produce
+   unreadably long lines of prose. */
+main { padding: 20px 16px; max-width: 1560px; margin: 0 auto; }
 
 .footer {
   display: flex;
@@ -89,13 +117,13 @@ main { padding: 20px 16px; max-width: 1200px; margin: 0 auto; }
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 20px;
-  margin-bottom: 20px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
 }
 .card-narrow { width: min(380px, 92vw); }
-.card h1 { margin-top: 0; font-size: 20px; }
-.card h2 { margin-top: 0; font-size: 14px; text-transform: uppercase;
-           letter-spacing: 0.06em; color: var(--muted); }
+.card h1 { margin-top: 0; margin-bottom: 8px; font-size: 17px; }
+.card h2 { margin: 0 0 10px; font-size: 11px; text-transform: uppercase;
+           letter-spacing: 0.07em; color: var(--muted); }
 
 .grid {
   display: grid;
@@ -107,9 +135,10 @@ main { padding: 20px 16px; max-width: 1200px; margin: 0 auto; }
 
 /* --- tables -------------------------------------------------------------- */
 
-.grid-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.grid-table th, .grid-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; }
-.grid-table th { color: var(--muted); font-weight: 600; font-size: 12px;
+.grid-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.grid-table th, .grid-table td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+.grid-table th { color: var(--muted); font-weight: 600; font-size: 10.5px;
+                 padding: 5px 8px;
                  text-transform: uppercase; letter-spacing: 0.04em; }
 .grid-table .r, th.r, td.r { text-align: right; }
 
@@ -129,7 +158,8 @@ main { padding: 20px 16px; max-width: 1200px; margin: 0 auto; }
 .pnl-flat { color: var(--muted); }
 .warn { color: var(--warn); }
 .muted { color: var(--muted); }
-.small { font-size: 12px; }
+.small { font-size: 11px; }
+.hint { margin: 4px 0 0; }
 
 /* --- controls ------------------------------------------------------------ */
 
@@ -164,6 +194,157 @@ main { padding: 20px 16px; max-width: 1200px; margin: 0 auto; }
 }
 @media (max-width: 860px) {
   .cols { grid-template-columns: 1fr; }
+}
+
+/* Three-column trading terminal: ticket | chain | book.
+   Named areas rather than bare column counts, so the reflow at each breakpoint
+   is explicit about where each panel goes instead of depending on source order. */
+.cols-3 {
+  display: grid;
+  gap: 16px;
+  align-items: start;
+  /* Sized by what fits, not by a breakpoint guess.
+     Three columns need only ~830px of content width (3 x 260 + gaps), so they
+     hold on any normal laptop; below that the browser wraps them itself. The
+     chain gets 1.4fr because it carries five columns of numbers, the ticket and
+     book only need enough for a form and a table. */
+  grid-template-columns: minmax(230px, 0.8fr) minmax(300px, 1.25fr) minmax(320px, 1.1fr);
+  grid-template-areas: "ticket chain book";
+}
+.col-ticket { grid-area: ticket; }
+.col-chain  { grid-area: chain; }
+.col-book   { grid-area: book; }
+
+/* --- CSS-only tabs -------------------------------------------------------- */
+/*
+   Switching is driven by hidden radio inputs and :checked, so it works with
+   scripting disabled, broken, or blocked by the CSP. The radios are visually
+   hidden but must stay focusable — moving them off-screen rather than
+   display:none keeps them reachable by keyboard.
+*/
+.tab-radio {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+
+.tab {
+  /* Equal halves, so the two tabs read as one switch rather than two labels of
+     accidental width. */
+  flex: 1;
+  justify-content: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 12px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tab:hover { color: var(--text); }
+
+.badge {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: 0;
+}
+
+.tab-panel { display: none; }
+
+/* The panels are siblings of the radios, so :checked selects them directly. */
+#tab-positions:checked ~ .tab-bar label[for="tab-positions"],
+#tab-orders:checked    ~ .tab-bar label[for="tab-orders"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+#tab-positions:checked ~ .tab-bar label[for="tab-positions"] .badge,
+#tab-orders:checked    ~ .tab-bar label[for="tab-orders"] .badge {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+#tab-positions:checked ~ .panel-positions,
+#tab-orders:checked    ~ .panel-orders { display: block; }
+
+/* Keyboard focus must be visible on the label, since the input itself is hidden.
+   Scoped per-radio so focusing one tab does not ring both. */
+#tab-positions:focus-visible ~ .tab-bar label[for="tab-positions"],
+#tab-orders:focus-visible ~ .tab-bar label[for="tab-orders"] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Below a comfortable three-column width, drop the book underneath so the
+   ticket and chain — the two you interact with — keep their space. */
+@media (max-width: 880px) {
+  /* Genuinely narrow: two columns, book full width underneath. */
+  .cols-3 {
+    grid-template-columns: minmax(240px, 300px) 1fr;
+    grid-template-areas:
+      "ticket chain"
+      "book   book";
+  }
+}
+
+@media (max-width: 640px) {
+  .cols-3 {
+    grid-template-columns: 1fr;
+    grid-template-areas: "ticket" "chain" "book";
+  }
+}
+
+/* --- keep the terminal inside one screen ---------------------------------- */
+/*
+   The option chain is ~21 rows tall. Left to grow it pushes the page far past
+   the viewport, so reaching positions means scrolling even when they sit in a
+   column beside it. Bounding each panel and scrolling INSIDE it is what keeps
+   all three on screen at once.
+
+   The threshold is 480px of viewport height, not 700px: a 1366x768 laptop has
+   roughly 600-650px of usable viewport once browser chrome is subtracted, so a
+   700px guard silently switched this off on exactly the machines that needed it.
+*/
+@media (min-height: 480px) {
+  .chain-scroll,
+  .tab-panel > [data-poll] {
+    /* svh where supported: on mobile, vh includes browser UI that is not
+       actually visible, which makes panels taller than the screen. */
+    max-height: calc(100vh - 260px);
+    max-height: calc(100svh - 260px);
+    overflow-y: auto;
+  }
+
+  /* Column headers stay put while rows scroll under them, so you never lose
+     track of which side is CE and which is PE. */
+  .chain thead th,
+  .tab-panel table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--panel);
+  }
 }
 
 .ticket .row {
@@ -245,6 +426,77 @@ main { padding: 20px 16px; max-width: 1200px; margin: 0 auto; }
 .chain-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .chain-cell.picked { background: rgba(76, 141, 255, 0.32); font-weight: 700; }
 
+/* Compact chain: tight rows so ~20 strikes fit without scrolling. */
+.chain td, .chain th { padding: 2px 6px; }
+.chain .chain-cell { padding: 3px 8px; }
+.chain-controls { gap: 8px; margin-bottom: 8px; font-size: 12px; }
+.chain-controls select { min-width: 0; padding: 4px 6px; font-size: 12px; }
+.chain-controls label { font-size: 11px; }
+
+/* Two-line rows in the book: symbol on top, context beneath. Keeps P&L in view
+   instead of pushed off the right edge by a seventh column. */
+.positions .sym, .orders .sym { display: block; font-size: 12px; }
+.positions .sub, .orders .sub {
+  display: block;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.3;
+}
+.positions td, .orders td { padding: 5px 6px; vertical-align: top; }
+
+/* --- BUY / SELL toggle ---------------------------------------------------- */
+/*
+   Two radios styled as a switch. Side is the field most likely to be wrong, and
+   a dropdown displays the wrong value as calmly as the right one; a toggle that
+   is green on one side and red on the other is legible at a glance.
+*/
+.side-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 4px;
+}
+.side-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+.side-toggle label {
+  margin: 0;
+  padding: 8px 0;
+  text-align: center;
+  /* Double-clicking to send would otherwise select the label text and leave a
+     highlight flashing on every order. */
+  user-select: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.side-toggle label:hover { color: var(--text); }
+
+#side-buy:checked ~ .side-buy {
+  background: var(--up);
+  border-color: var(--up);
+  color: #fff;
+}
+#side-sell:checked ~ .side-sell {
+  background: var(--down);
+  border-color: var(--down);
+  color: #fff;
+}
+#side-buy:focus-visible ~ .side-buy,
+#side-sell:focus-visible ~ .side-sell {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .atm-row { background: rgba(245, 166, 35, 0.08); }
 .atm-tag {
   font-size: 10px;
@@ -255,10 +507,13 @@ main { padding: 20px 16px; max-width: 1200px; margin: 0 auto; }
   vertical-align: middle;
 }
 
-label { display: block; margin: 14px 0 4px; font-size: 13px; color: var(--muted); }
-input[type="password"], input[type="text"], input[type="number"], select {
+label { display: block; margin: 10px 0 3px; font-size: 11px; color: var(--muted);
+        text-transform: uppercase; letter-spacing: 0.04em; }
+input[type="password"], input[type="text"], input[type="number"],
+input[type="date"], input[type="time"], select {
   width: 100%;
-  padding: 9px 10px;
+  padding: 6px 8px;
+  font-size: 13px;
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;

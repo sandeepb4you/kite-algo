@@ -177,6 +177,201 @@ func TestChainWorksWithoutJavaScript(t *testing.T) {
 	}
 }
 
+// TestTerminalTabsAreCSSOnly checks the positions/orders switcher does not
+// depend on JavaScript.
+//
+// Switching panels is a radio input plus :checked, so it survives a script
+// error, a stale cache, or the CSP — the same failure modes that broke the
+// chain's click handler. Only the count badges need scripting, and those
+// degrade to their server-rendered values.
+func TestTerminalTabsAreCSSOnly(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	positions := []broker.Position{
+		{TradingSymbol: "NIFTY25AUG24500CE", NetQuantity: -75},
+		{TradingSymbol: "NIFTY25AUG24500PE", NetQuantity: -75},
+	}
+	orders := []broker.Order{{ID: "o-1", TradingSymbol: "NIFTY25AUG24500CE",
+		Side: broker.SideSell, OrderType: broker.OrderTypeMarket, Quantity: 75,
+		Status: broker.StatusOpen, Mode: "paper"}}
+
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "paper"}, CSRF: "x",
+		Data: tradeData{Positions: positions, Orders: orders}}
+	if err := r.Render(w, 200, "trade.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	// Radio-driven, not script-driven.
+	for _, want := range []string{
+		`type="radio" name="book" id="tab-positions"`,
+		`type="radio" name="book" id="tab-orders"`,
+		`<label for="tab-positions"`,
+		`<label for="tab-orders"`,
+		`id="panel-positions"`,
+		`id="panel-orders"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("terminal is missing %q — tab switching would need JavaScript", want)
+		}
+	}
+	if strings.Contains(body, "onclick=") {
+		t.Error("tabs use an inline onclick, which the CSP blocks")
+	}
+
+	// Counts render server-side so they are correct before any script runs.
+	if !strings.Contains(body, `data-count-of="#panel-positions">2<`) {
+		t.Error("positions tab does not show its count (2) on first render")
+	}
+	if !strings.Contains(body, `data-count-of="#panel-orders">1<`) {
+		t.Error("orders tab does not show its count (1) on first render")
+	}
+
+	// The square-off button must sit outside the polled region, or the first
+	// background refresh would delete it.
+	sqIdx := strings.Index(body, "Square off everything")
+	pollIdx := strings.Index(body, `data-poll="/partials/positions"`)
+	closeIdx := strings.Index(body[pollIdx:], "</div>")
+	if sqIdx > 0 && pollIdx > 0 && sqIdx < pollIdx+closeIdx {
+		t.Error("the square-off button is inside the polled region and would be wiped by a refresh")
+	}
+}
+
+// TestSideToggleSubmitsAValidSide guards the field most likely to be wrong.
+//
+// Side moved from a <select> to a radio pair styled as a toggle. Radios post
+// nothing when none is checked, so BUY must be checked by default — otherwise
+// the ticket would submit without a side and be rejected, or worse, default to
+// something the operator did not choose.
+func TestSideToggleSubmitsAValidSide(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "paper"}, CSRF: "x", Data: tradeData{}}
+	if err := r.Render(w, 200, "trade.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	if !strings.Contains(body, `type="radio" name="side" id="side-buy" value="BUY" checked`) {
+		t.Error("BUY is not checked by default; the ticket could submit with no side")
+	}
+	if !strings.Contains(body, `type="radio" name="side" id="side-sell" value="SELL"`) {
+		t.Error("no SELL option in the side toggle")
+	}
+	// The values must match what the handler accepts.
+	for _, side := range []string{`value="BUY"`, `value="SELL"`} {
+		if !strings.Contains(body, side) {
+			t.Errorf("side toggle is missing %s", side)
+		}
+	}
+	if strings.Contains(body, `<select id="side"`) {
+		t.Error("the old side dropdown is still present alongside the toggle")
+	}
+
+	// Double-click sends, so the ticket must be addressable by the handler and
+	// the behaviour must be stated rather than hidden.
+	if !strings.Contains(body, `id="ticket"`) {
+		t.Error("the ticket form has no id; double-click-to-send cannot find it")
+	}
+	if !strings.Contains(body, "double-click to send") {
+		t.Error("double-click-to-send is not signposted; a surprise order is the worst kind")
+	}
+}
+
+// TestLiveTicketStillConfirms is the safety property behind double-click-to-send.
+// The shortcut submits through the form, so the live-mode confirmation attached
+// to that form still applies — the shortcut saves a click, it does not remove a
+// safeguard.
+func TestLiveTicketStillConfirms(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "live", LiveActive: true}, CSRF: "x",
+		Data: tradeData{LiveMode: true}}
+	if err := r.Render(w, 200, "trade.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	if !strings.Contains(body, "data-confirm=") {
+		t.Error("the live ticket carries no confirmation; a double click would send unchecked")
+	}
+	if !strings.Contains(body, "LIVE ORDER") {
+		t.Error("the live confirmation does not say it is a live order")
+	}
+	if !strings.Contains(body, "PLACE LIVE ORDER") {
+		t.Error("the submit button does not read as live")
+	}
+}
+
+// TestPositionsTableKeepsPnLVisible checks the compact layout: P&L is the number
+// looked at most, and must not be the one pushed off the edge by a wide table in
+// a narrow column.
+func TestPositionsTableKeepsPnLVisible(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "paper"}, CSRF: "x", Data: dashboardData{
+		Positions: []broker.Position{{
+			StrategyID: "short-straddle", TradingSymbol: "NIFTY25AUG24500CE",
+			Product: broker.ProductMIS, NetQuantity: -75,
+			AveragePrice: 120.5, LastPrice: 100.25, PnL: 1518.75,
+		}},
+	}}
+	if err := r.Render(w, 200, "positions_fragment.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	// Instrument, Qty, Avg, LTP, P&L plus a narrow action column — not the
+	// original seven. Count closing tags: "<th" also matches "<thead".
+	headers := strings.Count(body, "</th>")
+	if headers > 6 {
+		t.Errorf("positions table has %d columns; more than six forces a horizontal "+
+			"scroll in the book column and hides P&L", headers)
+	}
+	// Each open position must be closable from its own row.
+	if !strings.Contains(body, `name="symbol" value="NIFTY25AUG24500CE"`) {
+		t.Error("no per-position close button")
+	}
+	if !strings.Contains(body, "data-confirm=") {
+		t.Error("the close button does not confirm; a stray click would send a market order")
+	}
+	// Entry price sits beside LTP: comparing what you paid against what it is
+	// worth is the point of the row.
+	if !strings.Contains(body, "120.50") {
+		t.Error("average entry price is not shown")
+	}
+	if !strings.Contains(body, "100.25") {
+		t.Error("last traded price is not shown")
+	}
+	// Attribution stays as secondary text rather than its own column.
+	for _, want := range []string{"short-straddle", "MIS"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("compact row lost %q; the information should move, not vanish", want)
+		}
+	}
+	// html/template escapes the leading "+" as &#43;, which the browser renders
+	// as "+". Match the digits rather than the sign.
+	if !strings.Contains(body, "1,518.75") {
+		t.Error("P&L is not rendered")
+	}
+	if !strings.Contains(body, "pnl-up") {
+		t.Error("a profit is not coloured as one")
+	}
+}
+
 // TestTicketPreFillsFromTheChain covers the server side of that flow: the symbol
 // arrives as a query parameter and must land in the ticket.
 func TestTicketPreFillsFromTheChain(t *testing.T) {

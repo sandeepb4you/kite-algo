@@ -5,10 +5,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{if .Status.LiveActive}}[LIVE]{{else}}[PAPER]{{end}} {{.Title}} — kite-algo</title>
-  <link rel="stylesheet" href="/static/app.css">
-  <script src="/static/app.js" defer></script>
-  <script src="/static/ws.js" defer></script>
-  <script src="/static/chart.js" defer></script>
+  {{/* ?v= is the content hash of the embedded assets: the URL changes exactly
+       when the bytes change, so a stale stylesheet or script cannot be served
+       from cache. */}}
+  <link rel="stylesheet" href="/static/app.css?v={{.Build}}">
+  <script src="/static/app.js?v={{.Build}}" defer></script>
+  <script src="/static/ws.js?v={{.Build}}" defer></script>
+  <script src="/static/chart.js?v={{.Build}}" defer></script>
 </head>
 <body data-csrf="{{.CSRF}}">
 
@@ -50,6 +53,13 @@
     <a href="/risk" {{if eq .Nav "risk"}}class="on"{{end}}>Risk</a>
   </nav>
   <div class="spacer"></div>
+
+  {{/* Account figures live in the header so they are visible from every page.
+       They are polled on their own so the numbers stay fresh without a reload. */}}
+  <div class="account" data-poll="/partials/account" data-poll-ms="15000">
+    {{template "account_bar" .}}
+  </div>
+
   <span id="conn-dot" class="chip chip-warn">connecting</span>
   <span data-poll="/partials/status" data-poll-ms="10000"></span>
   <form method="post" action="/logout" class="inline">

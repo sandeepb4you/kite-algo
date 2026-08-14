@@ -91,6 +91,18 @@ type Ticker struct {
 	stop          chan struct{}
 	stopped       bool
 
+	// writeMu serializes data frames onto the socket.
+	//
+	// gorilla/websocket permits one concurrent reader and one concurrent writer
+	// and PANICS on a second writer — it will not silently corrupt the stream.
+	// Subscribe and Unsubscribe are called from HTTP handlers, so two browser
+	// tabs adjusting their symbols at the same moment is enough to race, and the
+	// panic takes down a process that is holding open positions.
+	//
+	// Separate from mu on purpose: mu guards subscription bookkeeping and is
+	// taken on paths that must not block behind a slow network write.
+	writeMu sync.Mutex
+
 	OnTick    TickHandler
 	OnOrder   OrderHandler
 	OnConnect ConnectHandler
@@ -338,16 +350,29 @@ func (t *Ticker) handleText(data []byte) {
 // enrichTick fills in the trading symbol/exchange if an instruments master is
 // available. Kite ticks only carry the numeric token.
 func (t *Ticker) enrichTick(tk *marketdata.Tick) {
-	if t.instruments == nil {
-		return
+	if t.instruments != nil {
+		if inst, ok := t.instruments.LookupToken(tk.InstrumentToken); ok {
+			tk.TradingSymbol = inst.TradingSymbol
+			tk.Exchange = inst.Exchange
+			return
+		}
 	}
-	if inst, ok := t.instruments.LookupToken(tk.InstrumentToken); ok {
-		tk.TradingSymbol = inst.TradingSymbol
-		tk.Exchange = inst.Exchange
+
+	// Index quotes are in no instrument master — the NFO feed carries contracts,
+	// not the indices they are written on. Without this fallback every index
+	// tick arrives with an empty trading symbol and is dropped downstream, so
+	// spot prices never appear and any strategy keyed to one never fires.
+	if name, ok := IndexSymbolFor(tk.InstrumentToken); ok {
+		tk.TradingSymbol = name
+		tk.Exchange = "INDICES"
 	}
 }
 
 // --- outgoing JSON commands ---
+
+// tickerWriteTimeout bounds a single socket write, so a stalled connection
+// cannot hold the write lock and block every other subscriber indefinitely.
+const tickerWriteTimeout = 10 * time.Second
 
 func (t *Ticker) sendJSON(v any) error {
 	t.mu.Lock()
@@ -360,6 +385,13 @@ func (t *Ticker) sendJSON(v any) error {
 	if err != nil {
 		return err
 	}
+
+	// One writer at a time. Marshalling happens outside the lock so the socket
+	// is held only for the write itself.
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+
+	_ = conn.SetWriteDeadline(time.Now().Add(tickerWriteTimeout))
 	return conn.WriteMessage(websocket.TextMessage, data)
 }
 

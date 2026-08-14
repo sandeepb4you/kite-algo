@@ -34,6 +34,7 @@
         el.innerHTML = html;
         // Newly swapped-in markup may contain forms (order cancel buttons).
         wireForms(el);
+        refreshCounts();
         // Let ws.js re-derive its subscription set from the new DOM.
         document.body.dispatchEvent(new CustomEvent("fragment-swapped"));
       })
@@ -56,6 +57,12 @@
     // Refresh immediately when the socket reconnects, so a page that was stale
     // during an outage catches up at once rather than at the next tick.
     document.body.addEventListener("ws-open", function () {
+      document.querySelectorAll("[data-poll]").forEach(swap);
+    });
+
+    // ws.js fires this on an order or a fill, so the position and order panels
+    // reflect a trade at once instead of on their next poll.
+    document.body.addEventListener("refresh-panels", function () {
       document.querySelectorAll("[data-poll]").forEach(swap);
     });
   }
@@ -114,6 +121,51 @@
       });
     });
   }
+
+  // --- tab counts ---------------------------------------------------------
+  //
+  // Tab switching itself is pure CSS, so it always works. These badges are the
+  // one part that needs scripting: the counts live in the tab bar, which sits
+  // outside the polled regions and would otherwise go stale.
+  //
+  // Counting rendered rows rather than trusting a server-supplied number means
+  // the badge can never disagree with the table beneath it.
+  function refreshCounts() {
+    document.querySelectorAll("[data-count-of]").forEach(function (badge) {
+      var panel = document.querySelector(badge.getAttribute("data-count-of"));
+      if (!panel) return;
+      badge.textContent = panel.querySelectorAll("tbody tr").length;
+    });
+  }
+
+  // --- double-click BUY / SELL to send -------------------------------------
+  //
+  // A single click only selects the side; a double click selects it and submits
+  // the ticket. This goes through requestSubmit() rather than submit() on
+  // purpose: requestSubmit fires the form's submit event, so the ticket still
+  // runs HTML validation (no symbol, no order) and still hits the confirm
+  // dialog that live mode attaches. A double click can therefore never bypass
+  // the live-mode confirmation — it only saves reaching for the button.
+  document.addEventListener("dblclick", function (ev) {
+    var label = ev.target.closest ? ev.target.closest(".side-toggle label") : null;
+    if (!label) return;
+
+    var input = document.getElementById(label.getAttribute("for"));
+    if (input) input.checked = true;
+
+    var form = document.getElementById("ticket");
+    if (!form) return;
+
+    // Clear the text selection a double click leaves behind.
+    if (window.getSelection) { window.getSelection().removeAllRanges(); }
+
+    if (form.requestSubmit) {
+      form.requestSubmit();
+    } else {
+      // Older browsers: dispatch the event so the same handler runs.
+      form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+    }
+  });
 
   // --- option chain → order ticket ----------------------------------------
   //

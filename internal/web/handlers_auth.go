@@ -17,6 +17,7 @@ type loginView struct {
 	Error string
 	Next  string
 	Mode  string
+	Build string
 }
 
 func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +88,7 @@ func (s *Server) renderLogin(w http.ResponseWriter, status int, errMsg, next str
 		Error: errMsg,
 		Next:  safeNext(next),
 		Mode:  string(s.app.Cfg.Mode),
+		Build: buildID,
 	}
 	if err := s.render.Render(w, status, "login.html", v); err != nil {
 		s.log.Error("render login failed", "err", err)

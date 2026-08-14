@@ -90,9 +90,15 @@
       case "ticks":   frame.d.forEach(applyTick); break;
       case "positions": applyPnL(frame.d); break;
       case "status":  applyStatus(frame.d); break;
-      case "fill":    toast("Fill: " + frame.d.TradingSymbol + " " +
-                            frame.d.Side + " " + frame.d.Quantity +
-                            " @ " + fmt(frame.d.Price), "ok"); break;
+      case "fill":
+        toast("Fill: " + frame.d.TradingSymbol + " " + frame.d.Side + " " +
+              frame.d.Quantity + " @ " + fmt(frame.d.Price), "ok");
+        // A fill changes both the position book and the order book. Waiting for
+        // the next poll would leave them up to five seconds out of date at the
+        // exact moment they are being watched.
+        refreshPanels();
+        break;
+      case "order":    refreshPanels(); break;
       case "rejected": toast("Rejected: " + frame.d.message, "err"); break;
     }
   }
@@ -116,11 +122,36 @@
     });
   }
 
+  // refreshPanels asks app.js to re-fetch every polled fragment immediately.
+  //
+  // Coalesced on a short timer: an order and its fill arrive back to back, and
+  // a multi-leg strategy produces several at once — one refresh covers them all.
+  var refreshTimer = null;
+  function refreshPanels() {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(function () {
+      document.body.dispatchEvent(new CustomEvent("refresh-panels"));
+    }, 120);
+  }
+
   function applyPnL(d) {
+    if (typeof d.day_pnl !== "number") return;
+    var text = "₹" + (d.day_pnl >= 0 ? "+" : "") + fmt(d.day_pnl);
+    var tone = d.day_pnl > 0 ? "pnl-up" : d.day_pnl < 0 ? "pnl-down" : "pnl-flat";
+
+    // The dashboard's headline figure.
     var el = document.getElementById("day-pnl");
-    if (el && typeof d.day_pnl === "number") {
-      el.textContent = "₹" + (d.day_pnl >= 0 ? "+" : "") + fmt(d.day_pnl);
-      el.className = "figure " + (d.day_pnl > 0 ? "pnl-up" : d.day_pnl < 0 ? "pnl-down" : "pnl-flat");
+    if (el) {
+      el.textContent = text;
+      el.className = "figure " + tone;
+    }
+    // The header copy, visible on every page. The engine re-prices positions on
+    // every tick and publishes at ~4/sec, so this tracks the market rather than
+    // waiting for the 15-second header poll.
+    var head = document.getElementById("day-pnl-header");
+    if (head) {
+      head.textContent = text;
+      head.className = "mono " + tone;
     }
   }
 

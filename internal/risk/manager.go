@@ -81,20 +81,30 @@ func (m *Manager) Check(ctx context.Context, req broker.OrderRequest, lotSize in
 	limits := m.limits
 	m.mu.RUnlock()
 
-	// Orders that reduce exposure are exempt from the two limits below.
+	// An order that reduces exposure is never blocked. Not by any rule here.
 	//
-	// This is not a convenience. The daily-loss rule trips precisely on the day
-	// you most need to flatten, and an unconditional check would have the risk
-	// manager reject the square-off that stops the bleeding — including the
-	// panic button. A limit whose purpose is to stop you opening new risk must
-	// never stop you shedding risk you already carry.
+	// Every limit in this file exists to cap the risk you are TAKING ON. Applied
+	// to an exit they do the opposite of their purpose: they trap you in the
+	// position they were meant to protect you from. This has been got wrong
+	// repeatedly, in four different ways, and each looked reasonable in
+	// isolation:
 	//
-	// Lot-multiple validation (rule 3) still applies to closes: the exchange
-	// rejects a malformed quantity regardless of intent.
-	closing := req.Intent == broker.IntentClose
+	//   - max-daily-loss fires exactly on the day you most need to flatten.
+	//   - max-order-value blocks closing a position bigger than the cap you set
+	//     for opening one.
+	//   - max-lots-per-trade blocks closing a 3-lot position built from three
+	//     1-lot entries, because the exit is naturally one larger order.
+	//   - the kill switch blocked its own square-off (handled in the engine).
+	//
+	// So the rule is unconditional: closing orders pass. Quantity validity is
+	// left to the exchange, which is the real authority on what it will accept —
+	// rejecting an exit locally to spare a round trip is a bad trade.
+	if req.Intent == broker.IntentClose {
+		return nil
+	}
 
 	// 1. Daily loss limit — the most important guardrail for options.
-	if !closing && limits.MaxDailyLoss > 0 && dayPnL <= -limits.MaxDailyLoss {
+	if limits.MaxDailyLoss > 0 && dayPnL <= -limits.MaxDailyLoss {
 		return &RiskError{
 			Rule: "max-daily-loss",
 			Message: fmt.Sprintf(
@@ -103,7 +113,7 @@ func (m *Manager) Check(ctx context.Context, req broker.OrderRequest, lotSize in
 	}
 
 	// 2. Order value limit (qty * reference price).
-	if !closing && limits.MaxOrderValue > 0 && req.Price > 0 {
+	if limits.MaxOrderValue > 0 && req.Price > 0 {
 		value := float64(req.Quantity) * req.Price
 		if value > limits.MaxOrderValue {
 			return &RiskError{

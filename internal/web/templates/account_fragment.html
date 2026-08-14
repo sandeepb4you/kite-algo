@@ -1,0 +1,39 @@
+{{define "account_fragment.html"}}{{template "account_bar" .}}{{end}}
+
+
+{{define "account_bar"}}
+{{$m := .Status.Margins}}
+{{if $m.Known}}
+  <span class="acct" title="Cash free to deploy, from Zerodha">
+    <span class="acct-label">Balance</span>
+    <b class="mono">₹{{money $m.Available}}</b>
+  </span>
+  <span class="acct" title="Margin blocked by open positions and orders">
+    <span class="acct-label">Used</span>
+    <b class="mono">₹{{money $m.Used}}</b>
+  </span>
+  {{/* Estimated from the published rate card, not the broker's figures — Kite
+       has no real-time charges API, and the real numbers arrive on the contract
+       note after the close. Marked "est" so it is never mistaken for settled. */}}
+  <span class="acct" title="Estimated brokerage, STT, exchange, SEBI, stamp duty and GST for today. Actual charges come from your contract note.">
+    <span class="acct-label">Charges<span class="est">est</span></span>
+    <b class="mono">₹{{money .Status.DayCharges.Total}}</b>
+  </span>
+  <span class="acct" title="Realized plus unrealized P&amp;L for the trading day, before charges">
+    <span class="acct-label">P&amp;L</span>
+    <b class="mono {{pnlClass .Status.DayPnL}}" id="day-pnl-header">₹{{signed .Status.DayPnL}}</b>
+  </span>
+  {{if .Status.DayCharges.Total}}
+  <span class="acct" title="Day P&amp;L less estimated charges — what the session actually made">
+    <span class="acct-label">Net</span>
+    <b class="mono {{pnlClass .Status.NetPnL}}">₹{{signed .Status.NetPnL}}</b>
+  </span>
+  {{end}}
+  {{if $m.Stale}}
+    {{/* A stale balance shown confidently is worse than one shown as stale. */}}
+    <span class="chip chip-warn" title="Last updated {{ago $m.UpdatedAt}}">balance stale</span>
+  {{end}}
+{{else if .Status.Kite.Connected}}
+  <span class="acct muted small">fetching balance…</span>
+{{end}}
+{{end}}

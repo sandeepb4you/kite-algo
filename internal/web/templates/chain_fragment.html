@@ -49,7 +49,9 @@
 {{/* Each premium is a real submit button carrying its symbol. With scripting
      off this reloads /trade with the contract loaded into the ticket; with
      scripting on, app.js intercepts and fills the ticket in place. */}}
-<form method="get" action="/trade" class="chain-form">
+{{/* The strike table scrolls inside its own box so a 21-row chain cannot push
+     the positions panel off the bottom of the screen. */}}
+<form method="get" action="/trade" class="chain-form chain-scroll">
   <input type="hidden" name="underlying" value="{{$c.Underlying}}">
   <input type="hidden" name="expiry" value="{{$exp}}">
 

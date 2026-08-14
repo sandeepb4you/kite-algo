@@ -85,17 +85,43 @@ func TestClosingOrdersSurviveOrderValueLimit(t *testing.T) {
 	}
 }
 
-// TestClosingOrdersStillValidateLotSize confirms the exemption is narrow. The
-// exchange rejects a quantity that is not a lot multiple whatever the intent, so
-// letting a malformed close through would just produce a broker error later.
-func TestClosingOrdersStillValidateLotSize(t *testing.T) {
+// TestNoLimitEverBlocksAnExit is the flat rule, stated once.
+//
+// Every limit here caps risk being TAKEN ON. Applied to an exit they trap the
+// operator in the position they were meant to guard against. This has been got
+// wrong four separate times, each plausible in isolation, so the property is
+// asserted for every rule at once rather than case by case.
+func TestNoLimitEverBlocksAnExit(t *testing.T) {
 	m := NewManager(limits())
-	err := m.Check(context.Background(), order(broker.IntentClose, 70, 100), 75, 1, 0, false)
-	if err == nil {
-		t.Fatal("closing order with a non-lot-multiple quantity was allowed")
+	ctx := context.Background()
+
+	cases := []struct {
+		name      string
+		req       broker.OrderRequest
+		lotSize   int
+		openPos   int
+		dayPnL    float64
+		newSymbol bool
+	}{
+		{"daily loss breached", order(broker.IntentClose, 75, 100), 75, 1, -50000, false},
+		{"value over the cap", order(broker.IntentClose, 75, 5000), 75, 1, 0, false},
+		{"more lots than the per-trade cap",
+			// The exact report from the field: a 3-lot position built from three
+			// 1-lot entries cannot be closed by one 3-lot order.
+			order(broker.IntentClose, 225, 100), 75, 1, 0, false},
+		{"quantity is not a lot multiple", order(broker.IntentClose, 70, 100), 75, 1, 0, false},
+		{"at the open-position cap", order(broker.IntentClose, 75, 100), 75, 99, 0, true},
+		{"everything wrong at once", order(broker.IntentClose, 9999, 99999), 75, 99, -999999, true},
 	}
-	if rule := ruleOf(t, err); rule != "invalid-lot-quantity" {
-		t.Errorf("rule = %q, want invalid-lot-quantity", rule)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := m.Check(ctx, tc.req, tc.lotSize, tc.openPos, tc.dayPnL, tc.newSymbol); err != nil {
+				t.Errorf("a closing order was blocked by %v.\n"+
+					"No limit may ever prevent an exit — that traps the operator in "+
+					"the position the limit exists to protect them from.", err)
+			}
+		})
 	}
 }
 

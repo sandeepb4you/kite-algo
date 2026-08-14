@@ -4,37 +4,17 @@ import (
 	"math"
 
 	"kite-algo/internal/broker"
+	"kite-algo/internal/charges"
 )
 
-// CostModel holds the transaction charges applied to simulated fills.
+// CostModel is the shared charge model plus the execution assumptions that only
+// a simulation needs.
 //
-// A short straddle enters and exits two legs every day; at roughly ₹120–200 per
-// round trip, ignoring costs turns a losing strategy into a winning one on
-// paper. Modelling them approximately is far better than modelling them at zero.
-//
-// ⚠️ VERIFY THESE RATES against Zerodha's brokerage calculator before trusting a
-// backtest. Indian statutory charges change with every budget — options STT was
-// raised from 0.0625% to 0.1% of sell-side premium effective 1 October 2024, and
-// the defaults here reflect the post-change regime.
+// The rates themselves live in internal/charges so a backtest and the live day's
+// running total cannot drift apart — the one number that must not disagree is
+// what a strategy costs to run.
 type CostModel struct {
-	// BrokerageFlat is charged per executed order (₹20 on Zerodha F&O).
-	BrokerageFlat float64
-	// BrokeragePercent applies to turnover, capped at BrokerageCap. Zero for
-	// options, which are flat-rate.
-	BrokeragePercent float64
-	BrokerageCap     float64
-
-	// STTSellPercent is Securities Transaction Tax, charged on the SELL side
-	// only, as a fraction of option premium.
-	STTSellPercent float64
-	// ExchangeTxnPercent is the exchange transaction charge on premium turnover.
-	ExchangeTxnPercent float64
-	// SEBIPercent is the SEBI turnover fee (₹10 per crore).
-	SEBIPercent float64
-	// StampDutyBuyPercent applies on the BUY side only.
-	StampDutyBuyPercent float64
-	// GSTPercent applies to (brokerage + exchange txn + SEBI), not to STT.
-	GSTPercent float64
+	charges.Model
 
 	// SlippageTicks is how many ticks a MARKET order fills away from the quoted
 	// price, adversely. Real fills are not free.
@@ -43,70 +23,25 @@ type CostModel struct {
 	TickSize float64
 }
 
-// DefaultNSEOptionCosts returns charges for NSE index options as of the
-// post-October-2024 regime. Verify before relying on them.
+// DefaultNSEOptionCosts returns charges and execution assumptions for NSE index
+// options. Verify the statutory rates against Zerodha's brokerage calculator;
+// they change with every Indian budget.
 func DefaultNSEOptionCosts() CostModel {
 	return CostModel{
-		BrokerageFlat:       20,
-		BrokerageCap:        20,
-		STTSellPercent:      0.001,     // 0.1% of sell-side premium
-		ExchangeTxnPercent:  0.0003503, // NSE F&O options, on premium
-		SEBIPercent:         0.000001,  // ₹10 per crore
-		StampDutyBuyPercent: 0.00003,   // 0.003% on the buy side
-		GSTPercent:          0.18,
-		SlippageTicks:       1,
-		TickSize:            0.05,
+		Model:         charges.DefaultNSEOptions(),
+		SlippageTicks: 1,
+		TickSize:      0.05,
 	}
 }
 
-// Charges is the breakdown of what one fill cost.
-type Charges struct {
-	Brokerage   float64 `json:"brokerage"`
-	STT         float64 `json:"stt"`
-	ExchangeTxn float64 `json:"exchange_txn"`
-	SEBI        float64 `json:"sebi"`
-	StampDuty   float64 `json:"stamp_duty"`
-	GST         float64 `json:"gst"`
-	Total       float64 `json:"total"`
-}
+// Charges is the itemised cost of one fill.
+type Charges = charges.Breakdown
 
 // Charge computes the cost of a single fill.
-func (m CostModel) Charge(f broker.Fill) Charges {
-	turnover := f.Price * float64(f.Quantity)
-	if turnover <= 0 {
-		return Charges{}
-	}
-
-	var c Charges
-
-	c.Brokerage = m.BrokerageFlat
-	if m.BrokeragePercent > 0 {
-		pct := turnover * m.BrokeragePercent
-		if m.BrokerageCap > 0 && pct > m.BrokerageCap {
-			pct = m.BrokerageCap
-		}
-		c.Brokerage = pct
-	}
-
-	// STT is sell-side only; stamp duty is buy-side only. Applying either to
-	// both sides would roughly double that component.
-	if f.Side == broker.SideSell {
-		c.STT = turnover * m.STTSellPercent
-	} else {
-		c.StampDuty = turnover * m.StampDutyBuyPercent
-	}
-
-	c.ExchangeTxn = turnover * m.ExchangeTxnPercent
-	c.SEBI = turnover * m.SEBIPercent
-	// GST applies to the service charges, not to the statutory taxes.
-	c.GST = (c.Brokerage + c.ExchangeTxn + c.SEBI) * m.GSTPercent
-
-	c.Total = c.Brokerage + c.STT + c.ExchangeTxn + c.SEBI + c.StampDuty + c.GST
-	return c
-}
+func (m CostModel) Charge(f broker.Fill) Charges { return m.Model.Charge(f) }
 
 // CostOf returns just the total charge for a fill, matching analytics.CostFunc.
-func (m CostModel) CostOf(f broker.Fill) float64 { return m.Charge(f).Total }
+func (m CostModel) CostOf(f broker.Fill) float64 { return m.Model.CostOf(f) }
 
 // SlippageFillModel fills market orders adversely by a fixed number of ticks.
 //

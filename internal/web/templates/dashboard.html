@@ -31,7 +31,7 @@
 <section class="card">
   <h2>Positions</h2>
   <div data-poll="/partials/positions" data-poll-ms="5000">
-    {{template "positions_table" .Data.Positions}}
+    {{template "positions_table" (posview .Data.Positions .CSRF)}}
   </div>
 </section>
 

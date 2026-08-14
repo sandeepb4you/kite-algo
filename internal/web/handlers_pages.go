@@ -35,6 +35,11 @@ func (s *Server) handleStatusFragment(w http.ResponseWriter, r *http.Request) {
 	s.renderFragment(w, r, "status_fragment.html", nil)
 }
 
+// handleAccountFragment refreshes the balance and P&L shown in the header.
+func (s *Server) handleAccountFragment(w http.ResponseWriter, r *http.Request) {
+	s.renderFragment(w, r, "account_fragment.html", nil)
+}
+
 // handleHealth is an unauthenticated liveness and readiness probe.
 //
 // It reports the Zerodha session state deliberately: the single most likely

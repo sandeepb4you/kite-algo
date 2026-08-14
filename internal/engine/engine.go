@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"kite-algo/internal/broker"
+	"kite-algo/internal/charges"
 	"kite-algo/internal/config"
 	"kite-algo/internal/events"
 	"kite-algo/internal/kite"
@@ -64,10 +65,28 @@ type Engine struct {
 	// halt is the kill switch, checked before every order.
 	halt haltGuard
 
-	mu        sync.RWMutex
-	prices    map[string]float64 // symbol -> last price
-	positions []broker.Position  // cached, refreshed by sync loop
-	dayPnL    float64            // cached
+	mu     sync.RWMutex
+	prices map[string]float64 // symbol -> last price
+	// rawPositions is the broker's view, whose PnL is REALIZED only. Kept
+	// separate from the marked view so re-pricing on every tick stays
+	// idempotent instead of compounding unrealized P&L into itself.
+	rawPositions []broker.Position
+	positions    []broker.Position // rawPositions marked to the latest prices
+	dayPnL       float64           // sum of the marked positions
+	// lastPnLPublish throttles tick-driven P&L updates.
+	lastPnLPublish time.Time
+
+	// refreshNow lets a fill ask the sync loop for an immediate position
+	// refresh. Buffered depth 1 so it coalesces: several fills in quick
+	// succession produce one refresh, not one each.
+	refreshNow chan struct{}
+
+	// dayCharges accumulates estimated transaction costs for the session, and
+	// chargeDay is the IST date they belong to so the total resets overnight
+	// rather than growing for the life of the process.
+	costModel  charges.Model
+	dayCharges charges.Breakdown
+	chargeDay  string
 
 	// cmu guards the market-data plumbing, which is now swapped at runtime:
 	// the process boots without a Kite session and acquires one when the
@@ -153,10 +172,33 @@ func New(b broker.Broker, store storage.Store, r *risk.Manager, recordTicks bool
 		wanted:      make(map[string]struct{}),
 		pinned:      make(map[string]struct{}),
 		handles:     make(map[string]*strategyHandle),
+		refreshNow:  make(chan struct{}, 1),
+		costModel:   charges.DefaultNSEOptions(),
 		pub:         events.Nop{},
 	}
 	for _, opt := range opts {
 		opt(e)
+	}
+
+	// Detect a paper broker automatically rather than relying on the caller to
+	// also pass WithPaperBroker.
+	//
+	// Forgetting it is silent and total: handleTick only feeds prices to
+	// e.paperBroker, so a nil one means the simulated broker never learns a
+	// price, no order is ever marketable, and every paper order sits PENDING
+	// for ever. Nothing logs an error — it simply does not trade. Deriving it
+	// from the broker that was actually supplied removes the failure mode.
+	if e.paperBroker == nil {
+		if p, ok := b.(*broker.PaperBroker); ok {
+			e.paperBroker = p
+		}
+	}
+
+	// Route fills at construction, not at Start. Between the two there is a
+	// window in which an order can be placed and filled, and a nil callback
+	// drops that fill on the floor — no position, no persistence, no error.
+	if e.paperBroker != nil {
+		e.paperBroker.SetOnFill(e.handleFill)
 	}
 	return e
 }
@@ -622,28 +664,20 @@ func (e *Engine) Options(underlying string, minExpiry time.Time) []strategy.Inst
 	return out
 }
 
-// knownIndexTokens maps index display names to their stable Kite instrument
-// tokens. Index quotes (NIFTY 50, etc.) are NOT in the NFO instrument CSV, so
-// we fall back to these well-known tokens when subscribing.
+// knownIndexTokens resolves index names to Kite instrument tokens.
 //
-// Every value here MUST be an indices-segment token: Kite encodes the exchange
-// segment in the low byte, and indices are segment 9 (see priceDivisor in
-// internal/kite/ticker.go). indexTokenValid enforces that, and TestIndexTokens
-// guards it — a token with the wrong segment is silently ignored by the
-// exchange, so the subscription just never delivers ticks.
-var knownIndexTokens = map[string]uint32{
-	"NIFTY 50":          256265,
-	"NIFTY BANK":        260105,
-	"NIFTY FIN SERVICE": 257801,
-	"INDIA VIX":         264969,
-}
-
-// segIndices is the Kite exchange-segment code carried in an index instrument
-// token's low byte.
-const segIndices = 9
+// Deliberately the SAME table the ticker uses to resolve tokens back to names.
+// Two copies would let subscription and tick-decoding disagree, and that
+// disagreement is invisible: ticks arrive for a token nothing can name, get
+// dropped for having no trading symbol, and the price simply never appears.
+var knownIndexTokens = kite.IndexTokens
 
 // indexTokenValid reports whether tok is a well-formed indices-segment token.
-func indexTokenValid(tok uint32) bool { return tok&0xff == segIndices }
+func indexTokenValid(tok uint32) bool { return kite.IsIndexToken(tok) }
+
+// segIndices is the Kite exchange-segment code carried in an index token's low
+// byte, kept here for the tests that assert the invariant.
+const segIndices = 9
 
 // Subscribe resolves trading symbols to tokens and streams them.
 //
@@ -807,6 +841,16 @@ func (e *Engine) handleTick(tick marketdata.Tick) {
 		pb.OnPrice(tick.TradingSymbol, tick.LastPrice)
 	}
 
+	// Re-price open positions against this tick.
+	//
+	// The authoritative refresh runs every few seconds and asks the BROKER for
+	// positions — which in live mode is a rate-limited REST call, so it cannot
+	// simply run faster. This marks the cached positions to market instead: no
+	// network, no broker call, just arithmetic on data already in hand. Without
+	// it P&L visibly lags the price by seconds, which is exactly when you are
+	// watching it most closely.
+	e.markPositionsToMarket(false)
+
 	for _, h := range e.activeStrategies() {
 		h.ticks.Add(1)
 		e.deliverTick(h, tick)
@@ -856,6 +900,90 @@ func (e *Engine) quarantine(h *strategyHandle, reason string) {
 	})
 }
 
+// ist is the exchange timezone; the charge total is a per-trading-day figure.
+var ist = time.FixedZone("IST", 5*3600+30*60)
+
+// accrueCharges adds a fill's estimated transaction costs to the day's total.
+//
+// The figures are estimates from the published rate card, not the broker's. Kite
+// exposes no real-time charges API — the authoritative numbers arrive on the
+// contract note after the close — so anything shown before then is necessarily
+// a model, and is labelled as such wherever it appears.
+func (e *Engine) accrueCharges(fill broker.Fill) {
+	when := fill.Timestamp
+	if when.IsZero() {
+		when = time.Now()
+	}
+	day := when.In(ist).Format("2006-01-02")
+
+	e.mu.Lock()
+	if e.chargeDay != day {
+		// New session: start from zero rather than carrying yesterday forward.
+		e.chargeDay = day
+		e.dayCharges = charges.Breakdown{}
+	}
+	e.dayCharges.Add(e.costModel.Charge(fill))
+	e.mu.Unlock()
+}
+
+// DayCharges returns the session's estimated transaction costs.
+func (e *Engine) DayCharges() charges.Breakdown {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.dayCharges
+}
+
+// pnlPublishInterval bounds how often a re-priced P&L is pushed to observers.
+//
+// Marking to market is cheap enough to do on every tick, but publishing at tick
+// rate would flood the event bus and the browser with figures nobody can read.
+// Four updates a second looks continuous to a human and costs nothing.
+const pnlPublishInterval = 250 * time.Millisecond
+
+// markPositionsToMarket re-prices the broker's positions against the latest
+// prices and publishes the result.
+//
+// It always derives from rawPositions — the broker's realized figures — so the
+// calculation is idempotent no matter how often ticks arrive. force bypasses the
+// publish throttle, for the authoritative refresh.
+func (e *Engine) markPositionsToMarket(force bool) {
+	e.mu.Lock()
+	if len(e.rawPositions) == 0 {
+		e.positions = nil
+		e.dayPnL = 0
+		e.mu.Unlock()
+		return
+	}
+
+	marked := make([]broker.Position, len(e.rawPositions))
+	copy(marked, e.rawPositions)
+
+	var dayPnL float64
+	for i := range marked {
+		if last, ok := e.prices[marked[i].TradingSymbol]; ok && last > 0 {
+			marked[i].LastPrice = last
+			marked[i].PnL = positionPnL(marked[i], last)
+		}
+		dayPnL += marked[i].PnL
+	}
+	e.positions = marked
+	e.dayPnL = dayPnL
+
+	due := force || time.Since(e.lastPnLPublish) >= pnlPublishInterval
+	if due {
+		e.lastPnLPublish = time.Now()
+	}
+	e.mu.Unlock()
+
+	if due {
+		e.pub.Publish(events.Event{
+			Kind:      events.KindPositions,
+			Positions: marked,
+			DayPnL:    dayPnL,
+		})
+	}
+}
+
 // handleFill records a fill and routes it to the owning strategy.
 func (e *Engine) handleFill(fill broker.Fill) {
 	if err := e.store.SaveFill(context.Background(), &fill); err != nil && e.logger != nil {
@@ -865,6 +993,12 @@ func (e *Engine) handleFill(fill broker.Fill) {
 	if e.currentPaperBroker() != nil {
 		e.persistPaperPositions()
 	}
+	e.accrueCharges(fill)
+
+	// A fill changes the book, so refresh it now rather than waiting for the
+	// next timer tick — this is exactly when the operator is watching.
+	e.requestRefresh()
+
 	e.pub.Publish(events.Event{
 		Kind:       events.KindFill,
 		At:         fill.Timestamp,
@@ -936,7 +1070,14 @@ func (e *Engine) configFor(name string) config.StrategyCfg {
 	return config.StrategyCfg{Name: name, Params: map[string]any{}}
 }
 
-// syncLoop periodically refreshes the cached positions/dayPnL and persists them.
+// syncLoop refreshes the cached positions and day P&L.
+//
+// It runs on a timer AND on demand. The timer alone left the position book
+// stale for up to three seconds after a fill — the one moment an operator is
+// looking straight at it. A fill nudges this loop instead of calling the broker
+// inline, so the refresh still happens on a single goroutine and a burst of
+// fills coalesces into one request rather than one per fill. That matters in
+// live mode, where fetching positions is a rate-limited REST call.
 func (e *Engine) syncLoop(ctx context.Context) {
 	t := time.NewTicker(3 * time.Second)
 	defer t.Stop()
@@ -947,7 +1088,18 @@ func (e *Engine) syncLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			e.refreshPositions(ctx)
+		case <-e.refreshNow:
+			e.refreshPositions(ctx)
 		}
+	}
+}
+
+// requestRefresh asks the sync loop to refresh positions as soon as it can.
+// Non-blocking: if a refresh is already queued, this one is redundant.
+func (e *Engine) requestRefresh() {
+	select {
+	case e.refreshNow <- struct{}{}:
+	default:
 	}
 }
 
@@ -987,38 +1139,22 @@ func (e *Engine) refreshPositions(ctx context.Context) {
 		}
 		return
 	}
-	// Mark up unrealized PnL for paper positions using the latest prices.
-	if e.currentPaperBroker() != nil {
-		e.mu.RLock()
-		prices := e.prices
-		e.mu.RUnlock()
-		for i := range positions {
-			if last, ok := prices[positions[i].TradingSymbol]; ok && last > 0 {
-				positions[i].LastPrice = last
-				positions[i].PnL = positionPnL(positions[i], last)
-			}
-		}
-	}
-
-	var dayPnL float64
-	for _, p := range positions {
-		dayPnL += p.PnL
-	}
+	// Keep the broker's figures as the REALIZED baseline, untouched.
+	//
+	// Marking to market adds unrealized P&L on top of it, and that happens on
+	// every tick. Overwriting PnL in place would make the next mark add
+	// unrealized to a number that already contained it, compounding the error
+	// on every tick until the reported P&L was nonsense.
 	e.mu.Lock()
-	e.positions = positions
-	e.dayPnL = dayPnL
+	e.rawPositions = positions
 	e.mu.Unlock()
 
-	// Persist so storage.GetDayPnL stays aligned.
-	for i := range positions {
-		_ = e.store.UpsertPosition(ctx, &positions[i])
-	}
+	e.markPositionsToMarket(true)
 
-	e.pub.Publish(events.Event{
-		Kind:      events.KindPositions,
-		Positions: positions,
-		DayPnL:    dayPnL,
-	})
+	// Persist so storage.GetDayPnL stays aligned. Uses the marked view.
+	for _, p := range e.Positions() {
+		_ = e.store.UpsertPosition(ctx, &p)
+	}
 }
 
 // reconcileLiveOrders diffs the order book against seen fills.

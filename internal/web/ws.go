@@ -139,6 +139,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 // readPump consumes browser messages until the connection dies.
 func (c *Client) readPump(s *Server) {
 	defer func() {
+		// A panic here previously took the whole process down — and this
+		// goroutine exists per browser connection, driven by whatever a tab
+		// sends. Nothing a UI does should be able to kill a server that is
+		// holding open positions, so the connection dies instead of the process.
+		if rec := recover(); rec != nil {
+			s.log.Error("panic in websocket read pump; dropping the client",
+				"err", rec)
+		}
 		c.hub.unregister <- c
 		_ = c.conn.Close()
 	}()
@@ -217,6 +225,9 @@ func (c *Client) removeSymbols(symbols []string) []string {
 func (c *Client) writePump(s *Server) {
 	ping := time.NewTicker(pingPeriod)
 	defer func() {
+		if rec := recover(); rec != nil {
+			s.log.Error("panic in websocket write pump; dropping the client", "err", rec)
+		}
 		ping.Stop()
 		_ = c.conn.Close()
 	}()

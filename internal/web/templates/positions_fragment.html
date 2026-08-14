@@ -1,29 +1,60 @@
-{{define "positions_fragment.html"}}{{template "positions_table" .Data.Positions}}{{end}}
+{{define "positions_fragment.html"}}{{template "positions_table" (posview .Data.Positions .CSRF)}}{{end}}
 
 
-{{/* positions_table takes the position SLICE directly, not the enclosing page
-     view. Taking the whole view coupled the partial to one page's Data shape,
-     and every other page that reused it failed at render time — the kind of
-     break Go templates only reveal when the page is actually opened. */}}
+{{/* Four columns, not seven.
+     P&L is the number you look at most, so it must never be the one pushed off
+     the right edge by a horizontal scrollbar. Strategy, product and average
+     price move under the symbol as secondary text.
+
+     Takes an explicit positions view rather than the enclosing page view, so
+     the partial works from any page regardless of that page's data shape. */}}
 {{define "positions_table"}}
-{{if .}}
-<table class="grid-table">
+{{if .Positions}}
+<table class="grid-table positions">
   <thead>
     <tr>
-      <th>Strategy</th><th>Symbol</th><th>Product</th>
-      <th class="r">Qty</th><th class="r">Avg</th><th class="r">LTP</th><th class="r">P&amp;L</th>
+      <th>Instrument</th>
+      <th class="r">Qty</th>
+      <th class="r">Avg</th>
+      <th class="r">LTP</th>
+      <th class="r">P&amp;L</th>
+      <th></th>
     </tr>
   </thead>
   <tbody>
-  {{range .}}
+  {{$csrf := .CSRF}}
+  {{range .Positions}}
     <tr>
-      <td>{{if .StrategyID}}{{.StrategyID}}{{else}}—{{end}}</td>
-      <td class="mono">{{.TradingSymbol}}</td>
-      <td>{{.Product}}</td>
-      <td class="r mono">{{.NetQuantity}}</td>
+      <td>
+        <span class="mono sym">{{.TradingSymbol}}</span>
+        <span class="sub">
+          {{if .StrategyID}}{{.StrategyID}}{{else}}manual{{end}} · {{.Product}}
+        </span>
+      </td>
+      <td class="r mono {{if lt .NetQuantity 0}}pnl-down{{else}}pnl-up{{end}}">{{.NetQuantity}}</td>
+      {{/* Average entry price as its own column, next to LTP: comparing what
+           you paid against what it is worth is the whole point of the row, and
+           that comparison is hard when one number is buried in small print. */}}
       <td class="r mono">{{num .AveragePrice}}</td>
       <td class="r mono" data-ltp="{{.TradingSymbol}}">{{num .LastPrice}}</td>
-      <td class="r mono {{pnlClass .PnL}}">{{signed .PnL}}</td>
+      <td class="r mono {{pnlClass .PnL}}"><b>{{signed .PnL}}</b></td>
+      <td class="r">
+        {{/* Close this one position. A plain form, so it works without
+             scripting; the confirmation names the instrument and the side,
+             because "are you sure?" on its own tells you nothing when several
+             positions are open. */}}
+        {{if .IsOpen}}
+        <form method="post" action="/api/positions/squareoff"
+              data-result="#order-result" class="inline"
+              data-confirm="Square off {{.TradingSymbol}}: {{if lt .NetQuantity 0}}BUY{{else}}SELL{{end}} {{if lt .NetQuantity 0}}{{end}}{{.NetQuantity}} at market?">
+          <input type="hidden" name="_csrf" value="{{$csrf}}">
+          <input type="hidden" name="symbol" value="{{.TradingSymbol}}">
+          <input type="hidden" name="strategy" value="{{.StrategyID}}">
+          <button class="btn btn-quiet btn-sm" type="submit"
+                  title="Square off {{.TradingSymbol}}">Close</button>
+        </form>
+        {{end}}
+      </td>
     </tr>
   {{end}}
   </tbody>

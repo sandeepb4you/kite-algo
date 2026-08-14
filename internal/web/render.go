@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"kite-algo/internal/broker"
 )
 
 // Renderer parses and executes the HTML templates.
@@ -76,10 +78,25 @@ func (r *Renderer) Render(w http.ResponseWriter, status int, name string, data a
 	return err
 }
 
+// positionsView is what the positions partial needs: the rows, plus the CSRF
+// token for the per-row close buttons.
+//
+// An explicit type rather than the enclosing page view, so the partial stays
+// usable from any page regardless of that page's data shape — the coupling that
+// previously broke the market page at render time.
+type positionsView struct {
+	Positions []broker.Position
+	CSRF      string
+}
+
 // funcMap holds the formatting helpers templates use. Keeping presentation
 // logic here rather than in JavaScript means paper and live views cannot drift.
 func funcMap() template.FuncMap {
 	return template.FuncMap{
+		// posview bundles positions with the CSRF token for the shared partial.
+		"posview": func(positions []broker.Position, csrf string) positionsView {
+			return positionsView{Positions: positions, CSRF: csrf}
+		},
 		// money formats rupees with Indian digit grouping (12,34,567.89).
 		"money": money,
 		// signed renders a PnL figure with an explicit sign.

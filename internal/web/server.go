@@ -118,6 +118,7 @@ func (s *Server) routes() http.Handler {
 
 	// Fragments polled by app.js — the correctness baseline behind the socket.
 	mux.Handle("GET /partials/status", page(s.handleStatusFragment))
+	mux.Handle("GET /partials/account", page(s.handleAccountFragment))
 	mux.Handle("GET /partials/positions", page(s.handlePositionsFragment))
 	mux.Handle("GET /partials/watchlist", page(s.handleWatchlistFragment))
 	mux.Handle("GET /partials/orders", page(s.handleOrdersFragment))
@@ -143,8 +144,19 @@ func (s *Server) staticHandler() http.Handler {
 	}
 	h := http.StripPrefix("/static/", http.FileServerFS(sub))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.opts.Dev {
-			w.Header().Set("Cache-Control", "public, max-age=3600")
+		switch {
+		case s.opts.Dev:
+			// -dev edits assets on disk; never cache them.
+			w.Header().Set("Cache-Control", "no-store")
+		case r.URL.Query().Get("v") == buildID:
+			// The URL carries the content hash, so this exact body can never
+			// change. Safe to cache hard — and the page requests a new URL the
+			// moment the assets do change.
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		default:
+			// Unversioned request (a bookmark, a stale page, curl). Revalidate
+			// every time rather than pinning a copy that may already be wrong.
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		h.ServeHTTP(w, r)
 	})

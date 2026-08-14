@@ -335,11 +335,17 @@ See `config.example.yaml` for all options with comments. Key sections:
 3. **Risk manager runs before every order** — daily-loss halt, position cap,
    order-value cap, lot-size validation. Manual orders from the web UI go
    through the same checks; a hand-typed order is not a trusted order.
-4. **Closing orders are never blocked by the exposure limits.** The daily-loss
-   and order-value caps exist to stop you *opening* risk. Applying them to exits
-   would have the risk manager refuse the square-off on exactly the day the loss
-   limit tripped — so `OrderIntent: IntentClose` exempts them. Lot-size
-   validation still applies, because the exchange rejects a bad quantity anyway.
+4. **No limit ever blocks an exit.** Every risk rule caps the risk you are
+   *taking on*; applied to an exit they trap you in the position they exist to
+   protect you from. An order marked `OrderIntent: IntentClose` passes the risk
+   manager unconditionally, and the kill switch does not block square-offs.
+
+   This was got wrong four separate times, each plausible in isolation — the
+   daily-loss cap firing on the day you most need to flatten; the order-value cap
+   refusing to close a position larger than your entry size; the lots-per-trade
+   cap refusing to close a 3-lot position built from three 1-lot entries; and the
+   kill switch blocking its own square-off. Quantity validity is left to the
+   exchange, which is the real authority on what it will accept.
 5. **Order quantity is entered in lots**, not shares. The server multiplies by
    the instrument's lot size, so a stray keystroke cannot produce an order 75×
    larger than intended.
