@@ -75,9 +75,9 @@ func BlackScholes(spot, strike, timeToExpiryYears, volatility, riskFreeRate floa
 	d1 := (math.Log(spot/strike) + (riskFreeRate+0.5*volatility*volatility)*timeToExpiryYears) / volSqrtT
 	d2 := d1 - volSqrtT
 
-	nd1 := normCDF(d1)      // N(d1)
-	nd2 := normCDF(d2)      // N(d2)
-	pdf := normPDF(d1)      // φ(d1)
+	nd1 := normCDF(d1) // N(d1)
+	nd2 := normCDF(d2) // N(d2)
+	pdf := normPDF(d1) // φ(d1)
 	discount := math.Exp(-riskFreeRate * timeToExpiryYears)
 
 	g := Greeks{

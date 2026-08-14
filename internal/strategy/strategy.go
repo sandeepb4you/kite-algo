@@ -32,8 +32,23 @@ type Strategy interface {
 	// OnFill is called when one of the strategy's orders fills (paper or live).
 	OnFill(ctx context.Context, fill broker.Fill)
 
-	// Stop is called once at shutdown to flatten/clean up.
+	// Stop is called when the strategy is being shut down. It should release
+	// resources and stop reacting to the market.
+	//
+	// Stop must NOT place orders. Whether an outgoing strategy's open positions
+	// are squared off is the operator's decision, made per-stop in the UI, and
+	// the engine carries it out — see Flattener.
 	Stop(ctx context.Context) error
+}
+
+// Flattener is implemented by strategies that know how to unwind their own
+// position correctly — for example buying back short option legs before selling
+// long ones, so the account is never briefly naked.
+//
+// The engine prefers this over its own generic square-off when stopping a
+// strategy with "square off" requested.
+type Flattener interface {
+	SquareOff(ctx context.Context, reason string) error
 }
 
 // Instrument is the minimal instrument view a strategy needs. It's deliberately
@@ -73,4 +88,29 @@ type Trader interface {
 
 	// Subscribe requests market-data streaming for the given trading symbols.
 	Subscribe(symbols []string) error
+
+	// Now returns the current time in the strategy's frame of reference.
+	//
+	// Strategies MUST use this instead of time.Now(). In live and paper mode it
+	// is wall-clock; in a backtest it is simulated time. A strategy that reads
+	// the real clock while replaying last month's data will evaluate its
+	// square-off window and its option greeks against today, which makes the
+	// backtest quietly meaningless rather than obviously broken.
+	Now() time.Time
+
+	// Signal emits a human-readable decision or observation to the platform's
+	// event stream, where it appears in the UI's activity feed and as the
+	// strategy's last-signal line. It never blocks and never affects trading.
+	Signal(s Signal)
+}
+
+// Signal is a strategy-authored event describing what it decided and why.
+type Signal struct {
+	StrategyID string         // filled in by the engine if empty
+	Kind       string         // "enter" | "exit" | "skip" | free-form
+	Symbol     string         // optional
+	Level      string         // "info" | "warn" | "error"; empty means info
+	Message    string         // one line, written for a human
+	Data       map[string]any // supporting numbers, e.g. {"net_delta": -0.31}
+	At         time.Time      // filled in by the engine if zero
 }

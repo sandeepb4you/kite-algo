@@ -64,6 +64,16 @@ func (s *Server) handlePlaceOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Report a halt before validating the ticket. The engine blocks the order
+	// anyway, but only after the form has been checked — so an operator trying
+	// to trade during a halt would otherwise be told about a missing lot size
+	// or a stray price field and never learn the real reason.
+	if halt := s.app.Engine.HaltState(); halt.Halted {
+		s.orderResult(w, http.StatusOK, "error",
+			"Trading is HALTED ("+halt.Reason+"). Resume on the Strategies page to trade again.")
+		return
+	}
+
 	req, err := s.parseOrderForm(r)
 	if err != nil {
 		s.orderResult(w, http.StatusBadRequest, "error", err.Error())

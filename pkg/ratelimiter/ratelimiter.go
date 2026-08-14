@@ -13,11 +13,11 @@ import (
 // Limiter allows up to `rate` operations per second, with a burst capacity.
 // It blocks (respecting context cancellation) when the bucket is empty.
 type Limiter struct {
-	mu       sync.Mutex
-	tokens   float64       // current tokens in the bucket
-	maxTokens float64       // bucket capacity (== burst)
-	rate     float64       // tokens added per second
-	last     time.Time     // last refill time
+	mu        sync.Mutex
+	tokens    float64   // current tokens in the bucket
+	maxTokens float64   // bucket capacity (== burst)
+	rate      float64   // tokens added per second
+	last      time.Time // last refill time
 }
 
 // New returns a Limiter allowing `rate` ops/sec with a burst equal to rate

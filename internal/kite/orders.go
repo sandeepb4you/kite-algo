@@ -17,10 +17,10 @@ const (
 // PlaceOrderParams mirrors Kite's place-order form fields. The LiveBroker
 // builds this from the platform's broker.OrderRequest.
 type PlaceOrderParams struct {
-	Variety           string  // regular | amo | bo | co
-	Exchange          string  // NFO, NSE, ...
+	Variety           string // regular | amo | bo | co
+	Exchange          string // NFO, NSE, ...
 	Tradingsymbol     string
-	TransactionType   string  // BUY | SELL
+	TransactionType   string // BUY | SELL
 	Quantity          int
 	Product           string  // MIS | NRML | CNC
 	OrderType         string  // MARKET | LIMIT | SL | SL-M

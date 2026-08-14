@@ -87,6 +87,20 @@ func (s *Server) routes() http.Handler {
 
 	// Order entry and position management. Every one of these is a
 	// state-changing POST and therefore CSRF-protected by the `page` chain.
+	// Algo control panel.
+	mux.Handle("GET /strategies", page(s.handleStrategies))
+	mux.Handle("GET /strategies/new", page(s.handleNewStrategy))
+	mux.Handle("GET /risk", page(s.handleRisk))
+	mux.Handle("GET /research", page(s.handleResearch))
+	mux.Handle("GET /backtest", page(s.handleBacktest))
+	mux.Handle("POST /backtest", page(s.handleBacktest))
+	mux.Handle("GET /api/candles", page(s.handleCandlesJSON))
+	mux.Handle("POST /api/strategies", page(s.handleStartStrategy))
+	mux.Handle("POST /api/strategies/{id}/stop", page(s.handleStopStrategy))
+	mux.Handle("POST /api/halt", page(s.handleHalt))
+	mux.Handle("POST /api/resume", page(s.handleResume))
+	mux.Handle("POST /api/risk/limits", page(s.handleSetRiskLimits))
+
 	mux.Handle("POST /api/orders", page(s.handlePlaceOrder))
 	mux.Handle("POST /api/orders/{id}/cancel", page(s.handleCancelOrder))
 	mux.Handle("POST /api/positions/squareoff", page(s.handleSquareOff))
@@ -107,6 +121,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /partials/positions", page(s.handlePositionsFragment))
 	mux.Handle("GET /partials/watchlist", page(s.handleWatchlistFragment))
 	mux.Handle("GET /partials/orders", page(s.handleOrdersFragment))
+	mux.Handle("GET /partials/strategies", page(s.handleStrategiesFragment))
 
 	return chain(mux, s.recoverPanic, s.accessLog, s.secureHeaders)
 }

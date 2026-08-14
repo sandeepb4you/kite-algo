@@ -25,20 +25,20 @@ func (c *Client) GetProfile(ctx context.Context) (Profile, error) {
 
 // KitePosition is one row of GET /portfolio/positions (day or net).
 type KitePosition struct {
-	Tradingsymbol  string  `json:"tradingsymbol"`
-	Exchange       string  `json:"exchange"`
-	Product        string  `json:"product"`
-	Quantity       int     `json:"quantity"`        // net (signed)
-	OvernightQuantity int  `json:"overnight_quantity"`
-	Multiplier     float64 `json:"multiplier"`
-	LastPrice      float64 `json:"last_price"`
-	AveragePrice   float64 `json:"average_price"`
-	ClosePrice     float64 `json:"close_price"`
-	PnL            float64 `json:"pnl"`
-	SellValue      float64 `json:"sell_value"`
-	BuyValue       float64 `json:"buy_value"`
-	DaySellQuantity int    `json:"day_sell_quantity"`
-	DayBuyQuantity  int    `json:"day_buy_quantity"`
+	Tradingsymbol     string  `json:"tradingsymbol"`
+	Exchange          string  `json:"exchange"`
+	Product           string  `json:"product"`
+	Quantity          int     `json:"quantity"` // net (signed)
+	OvernightQuantity int     `json:"overnight_quantity"`
+	Multiplier        float64 `json:"multiplier"`
+	LastPrice         float64 `json:"last_price"`
+	AveragePrice      float64 `json:"average_price"`
+	ClosePrice        float64 `json:"close_price"`
+	PnL               float64 `json:"pnl"`
+	SellValue         float64 `json:"sell_value"`
+	BuyValue          float64 `json:"buy_value"`
+	DaySellQuantity   int     `json:"day_sell_quantity"`
+	DayBuyQuantity    int     `json:"day_buy_quantity"`
 }
 
 // GetPositions returns Kite's positions for the requested view ("net" or "day").
@@ -56,9 +56,9 @@ func (c *Client) GetPositions(ctx context.Context) (map[string][]KitePosition, e
 // Margin is the GET /user/margins/{segment} response (trimmed).
 type Margin struct {
 	Available struct {
-		LiveBalance     float64 `json:"live_balance"`
-		Cash            float64 `json:"cash"`
-		OpeningBalance  float64 `json:"opening_balance"`
+		LiveBalance    float64 `json:"live_balance"`
+		Cash           float64 `json:"cash"`
+		OpeningBalance float64 `json:"opening_balance"`
 	} `json:"available"`
 	Used struct {
 		Debits float64 `json:"debits"`

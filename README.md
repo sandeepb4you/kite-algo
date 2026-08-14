@@ -224,9 +224,41 @@ func (s *MyStrategy) OnFill(ctx context.Context, fill broker.Fill) {}
 func (s *MyStrategy) Stop(ctx context.Context) error { return nil }
 ```
 
-Register it in `main.go` under the `switch sc.Name` block and add a config entry.
+Then declare its parameters as data and register it:
+
+```go
+func init() { strategy.Register(Descriptor()) }
+
+func Descriptor() strategy.Descriptor {
+    return strategy.Descriptor{
+        Type:    "my-strategy",
+        Title:   "My strategy",
+        Factory: func(id string, log *slog.Logger) (strategy.Strategy, error) { ... },
+        Params: []strategy.ParamSpec{
+            {Key: "lots", Label: "Lots", Kind: strategy.KindInt,
+             Default: 1, Min: strategy.Ptr(1), Max: strategy.Ptr(10)},
+        },
+    }
+}
+```
+
+Add a blank import to `internal/strategy/catalog` and it appears in the web UI
+with a generated configuration form — **no template or UI changes needed**. The
+registry coerces form strings to the declared types, applies defaults, enforces
+ranges, and rejects unknown keys, so `Init` can trust what it receives.
+
 The `Trader` you receive exposes `PlaceOrder` (risk-checked), `LTP`, `LotSize`,
-`Lookup`, `Options`, and `Subscribe`.
+`Lookup`, `Options`, `Subscribe`, `Now`, and `Signal`.
+
+> **Use `trader.Now()`, never `time.Now()`.** In a backtest the trader supplies
+> simulated time; a strategy that reads the wall clock while replaying past data
+> evaluates its exit windows and greeks against today, which makes the backtest
+> quietly wrong rather than obviously broken.
+
+> **`Stop` must not place orders.** Whether an outgoing strategy's positions are
+> squared off is the operator's decision, taken per-stop in the UI. Implement
+> `strategy.Flattener` if your strategy needs to unwind its legs in a particular
+> order; the engine calls it when square-off is requested.
 
 ---
 
@@ -268,7 +300,17 @@ See `config.example.yaml` for all options with comments. Key sections:
 5. **Order quantity is entered in lots**, not shares. The server multiplies by
    the instrument's lot size, so a stray keystroke cannot produce an order 75×
    larger than intended.
-6. **Every order/fill is persisted** with its mode (`paper`/`live`) for audit,
+6. **Kill switch.** Halting blocks every new order at `Trader.PlaceOrder` — the
+   only route a strategy has to the market — and stops all strategies. Square-off
+   is a separate button, because halting and flattening are different decisions.
+   Closing orders bypass the halt for the same reason they bypass the loss limit.
+7. **Stopping a strategy asks what to do with its positions.** Two buttons, no
+   default: leaving short options unmanaged and closing them unrequested are both
+   bad outcomes, and only the operator knows which they meant.
+8. **A strategy that panics is quarantined, not fatal.** The tick fan-out runs on
+   the market-data goroutine, so an unrecovered panic would take down streaming,
+   the UI, and every other strategy while positions stayed open.
+9. **Every order/fill is persisted** with its mode (`paper`/`live`) for audit,
    and every order row in the UI shows which broker handled it.
 
 ---
@@ -280,18 +322,108 @@ See `config.example.yaml` for all options with comments. Key sections:
   tracks it correctly. Workaround: persist fills and compute from the `fills`
   table.
 - No backtesting engine yet (tick/candle *recording* is in place; replay isn't).
-- The web UI covers login, session management, a status dashboard, live
-  market-data streaming, and a manual trading terminal. The algo control panel
-  (runtime strategy start/stop) is the next phase.
-- Strategies are still declared in `config.yaml` and registered at startup;
-  runtime start/stop from the UI is not wired yet.
-- `shortstraddle` has no day rollover — it trades once per process. Fine for the
-  old restart-daily CLI, **not** for a long-running server. Fix before running it
-  unattended.
+- **Backtests can only cover periods with an instrument snapshot.** Kite drops
+  expired contracts from its feed, so a backtest over dates before this server
+  first ran cannot resolve its option symbols. It fails loudly rather than
+  reporting an empty result.
+- Backtest runs are not persisted — results live only in the page that produced
+  them. Strategy parameters other than lots use the descriptor's defaults; a full
+  per-strategy parameter form on the backtest page is the obvious next step.
+- Backtests run synchronously in the request. A few days of 5-minute bars is
+  sub-second; a months-long minute-resolution run would want a job queue.
+- Exchange holidays are not preloaded. The calendar handles weekends
+  structurally, but until holidays are configured a few empty windows get
+  fetched on holiday dates — wasteful, never wrong.
+- Risk limits edited in the UI are held in memory and revert to `config.yaml` on
+  restart. A halt does not survive a restart either — a crash-restart resumes
+  with trading enabled.
 - Single broker (Kite), single account.
 - Holiday calendar not tracked (expiry/square-off assumes last Thursday).
 - The `-race` detector needs a C toolchain, which this project deliberately
   avoids (pure-Go SQLite). Run `go test -race` on a machine with gcc, or in CI.
+
+---
+
+## Backtesting
+
+`/backtest` replays stored candles through the **real** strategy, broker, and
+risk-manager code. A strategy runs unmodified in backtest, paper, and live,
+because all three talk only to `strategy.Trader` and share the same
+`broker.PaperBroker` execution path.
+
+`TestPaperAndBacktestAgree` asserts that the same strategy over the same prices
+produces identical fills through the live engine and through the backtester. If
+that ever fails, the backtester has stopped predicting what paper trading does —
+which makes every number it reports untrustworthy, however plausible it looks.
+
+**Determinism is an invariant.** The runner is single-goroutine, the event feed
+imposes a total order on `(time, symbol)`, and nothing reads the wall clock. A
+backtest is a measurement; one that changes between runs is worthless.
+
+Things the backtester does deliberately, because the alternative flatters the
+strategy:
+
+| Choice | Why |
+|---|---|
+| **Costs and slippage on by default** | A straddle round trip costs ~₹121 in charges. At zero cost a losing strategy looks profitable. |
+| **Pessimistic intrabar path** | A candle records four prices in no defined order. When the data cannot say whether the high or low came first, assume the adverse one. |
+| **Open positions force-closed** | Otherwise a strategy that never exits contributes no trade, and its unrealized loss vanishes from the report. |
+| **Mid-run subscriptions carry no lookahead** | A symbol attached at 11:00 never receives the morning's bars. |
+| **The real risk manager runs** | A backtest that ignores position limits measures a strategy nobody could have run. |
+| **Sharpe is zero below two trading days** | A ratio from one observation is noise dressed as a statistic. |
+
+> Equity is capital plus cumulative net P&L. **Margin is not modelled**, so for an
+> option-selling strategy the return percentage is a comparison between runs, not
+> a true account return.
+
+⚠️ Statutory rates in the cost model (STT, GST, exchange, stamp duty) change with
+every Indian budget. Verify against Zerodha's brokerage calculator before
+trusting a result. Defaults reflect the post-October-2024 regime.
+
+---
+
+## Historical data
+
+`/research` loads candles for any instrument and interval. Data is cached in
+SQLite, and a **coverage table** records which windows have been fetched — so a
+repeat request costs nothing, only genuine gaps are downloaded, and a weekend
+that legitimately has no candles is never requested twice. Non-trading days are
+skipped before the request is made.
+
+Historical requests use a **separate rate-limit budget** from trading. A backfill
+is thousands of requests; sharing one bucket would let it queue ahead of order
+placement and delay an entry — or a square-off — by seconds.
+
+Without Zerodha's Historical Data subscription, the platform falls back to
+candles aggregated from ticks it recorded itself (`recording.ticks: true`). Those
+are labelled as tick-derived; they are not exchange data and should not be
+treated as equivalent.
+
+### Instrument snapshots — start these early
+
+> Kite's `/instruments` feed lists only **live** contracts, and historical
+> candles are keyed by `instrument_token`. When a weekly option expires its token
+> disappears from the API, and no backtest can ever resolve that contract again.
+> **The data is not recoverable at any price.**
+
+The instrument master is snapshotted automatically on every Zerodha login, so
+simply running the server captures it. `/research` warns when today's snapshot is
+missing. Every day the server runs without one is a day that can never be
+backtested.
+
+---
+
+## Database migrations
+
+The schema is versioned with SQLite's `PRAGMA user_version`. `schema.sql` is the
+version 1 baseline; everything after it is a numbered file in
+`internal/storage/sqlite/migrations/`, applied in its own transaction at startup.
+
+Databases created before versioning existed upgrade in place — the baseline is
+all `CREATE TABLE IF NOT EXISTS`, so applying it to an existing file is a no-op
+that stamps the version and moves on.
+
+Never edit a migration that has shipped; add a new one.
 
 ---
 
@@ -315,11 +447,12 @@ a few seconds stale rather than wrong.
 
 ## Roadmap
 
-- Manual trading terminal (order ticket, orderbook, square-off)
-- Strategy registry with runtime start/stop and a generic parameter form
-- Historical-data client + candle cache, then a replay backtester
+- Persist backtest runs so results can be compared over time
+- Per-strategy parameter form on the backtest page
+- Parameter sweeps (the `ParamSpec` min/max metadata is already the right shape)
 - Fill-based realized P&L reconciliation for live mode
 - Multi-leg order types (spread entry as one unit)
+- Exchange holiday calendar
 
 ---
 

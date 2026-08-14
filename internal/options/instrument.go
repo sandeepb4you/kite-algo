@@ -13,8 +13,8 @@ import (
 // expiry is best-effort. For the authoritative expiry/strike, always prefer the
 // Kite instrument master (kite.Instruments).
 type Spec struct {
-	Underlying string    // NIFTY, BANKNIFTY, FINNIFTY, ...
-	Strike     float64   // 24500
+	Underlying string  // NIFTY, BANKNIFTY, FINNIFTY, ...
+	Strike     float64 // 24500
 	Type       OptionType
 	ExpiryCode string    // raw middle token, e.g. "24AUG" or "24815"
 	Expiry     time.Time // best-effort parsed expiry date (zero if unknown)
@@ -92,6 +92,7 @@ func splitUnderlying(prefix string) (string, string) {
 //   - "YYMMM"  : 24AUG → Aug 2024 (old monthly format)
 //   - "YYMMDD" : 24815 → 2024-08-15 (numeric weekly format)
 //   - "YYM"    : 248 (rare)
+//
 // Returns the zero time if it can't parse.
 func parseExpiryCode(code string) time.Time {
 	code = strings.TrimSpace(code)

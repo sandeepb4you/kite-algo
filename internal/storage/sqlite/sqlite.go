@@ -49,9 +49,9 @@ func New(ctx context.Context, path string, logger *slog.Logger) (*Store, error) 
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
+	if err := migrate(ctx, db, logger); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
+		return nil, err
 	}
 
 	if logger != nil {

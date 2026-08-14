@@ -1,0 +1,177 @@
+{{define "backtest.html"}}
+{{template "head" .}}
+
+<div class="card card-form">
+  <h1>Backtest</h1>
+  <p class="muted small">
+    Replays stored candles through the real strategy, broker, and risk code.
+    Costs and one tick of adverse slippage are applied; positions still open at
+    the end are force-closed so unrealized losses cannot hide.
+  </p>
+
+  <form method="post" action="/backtest">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+
+    <label for="strategy">Strategy</label>
+    <select id="strategy" name="strategy" required>
+      <option value="">Choose…</option>
+      {{$sel := .Data.StrategyType}}
+      {{range .Data.Available}}
+        <option value="{{.Type}}" {{if eq .Type $sel}}selected{{end}}>{{.Title}}</option>
+      {{end}}
+    </select>
+
+    <label for="symbols">Seed symbols</label>
+    <input id="symbols" name="symbols" type="text" value="{{.Data.Symbols}}"
+           placeholder="NIFTY 50" required>
+    <p class="muted small">
+      Comma separated. The strategy subscribes to more as it runs — a straddle
+      picks its option legs only after it sees a spot price.
+    </p>
+
+    <div class="row">
+      <div>
+        <label for="interval">Interval</label>
+        <select id="interval" name="interval">
+          {{$si := .Data.Interval}}
+          {{range .Data.Intervals}}
+            <option value="{{.}}" {{if eq (printf "%s" .) $si}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div>
+        <label for="from">From</label>
+        <input id="from" name="from" type="date" value="{{.Data.From}}">
+      </div>
+      <div>
+        <label for="to">To</label>
+        <input id="to" name="to" type="date" value="{{.Data.To}}">
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="lots">Lots</label>
+        <input id="lots" name="lots" type="number" min="1" step="1" value="{{.Data.Lots}}">
+      </div>
+      <div>
+        <label for="capital">Capital (₹)</label>
+        <input id="capital" name="capital" type="number" min="1" step="1000" value="{{.Data.Capital}}">
+      </div>
+      <div>
+        <label for="bar_path">Intrabar path</label>
+        <select id="bar_path" name="bar_path">
+          {{$sp := .Data.BarPath}}
+          {{range .Data.Paths}}
+            <option value="{{.}}" {{if eq (printf "%s" .) $sp}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </div>
+    </div>
+    <p class="muted small">
+      A candle records four prices in no defined order. <b>pessimist</b> assumes
+      the adverse extreme came first — when the data cannot say, a backtest
+      should not assume the lucky ordering.
+    </p>
+
+    <button class="btn btn-primary" type="submit">Run backtest</button>
+  </form>
+
+  {{if .Data.Error}}
+    <p class="alert alert-error">{{.Data.Error}}</p>
+  {{end}}
+</div>
+
+{{with .Data.Result}}
+<div class="grid">
+  <section class="card">
+    <h2>Net P&amp;L</h2>
+    <p class="figure {{pnlClass .Metrics.NetPnL}}">₹{{signed .Metrics.NetPnL}}</p>
+    <p class="muted small">
+      after ₹{{money .Metrics.TotalCosts}} in costs · gross ₹{{signed .Metrics.GrossPnL}}
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Summary</h2>
+    <table class="kv">
+      <tr><th>Trades</th><td>{{.Metrics.TradeCount}} ({{.Metrics.WinCount}}W / {{.Metrics.LossCount}}L)</td></tr>
+      <tr><th>Win rate</th><td>{{num .Metrics.WinRate}}%</td></tr>
+      <tr><th>Profit factor</th>
+          <td>{{if .Metrics.ProfitFactorInfinite}}∞ (no losses){{else}}{{num .Metrics.ProfitFactor}}{{end}}</td></tr>
+      <tr><th>Expectancy</th><td>₹{{signed .Metrics.Expectancy}} / trade</td></tr>
+      <tr><th>Max drawdown</th><td>₹{{money .Metrics.MaxDrawdown}} ({{num .Metrics.MaxDrawdownPct}}%)</td></tr>
+      <tr><th>Sharpe</th>
+          <td>{{if .Metrics.Sharpe}}{{num .Metrics.Sharpe}}{{else}}—{{end}}</td></tr>
+      <tr><th>Trading days</th><td>{{.Metrics.TradingDays}}</td></tr>
+      <tr><th>Best / worst day</th>
+          <td>₹{{signed .Metrics.BestDay}} / ₹{{signed .Metrics.WorstDay}}</td></tr>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Run</h2>
+    <table class="kv">
+      <tr><th>Events replayed</th><td>{{.Events}}</td></tr>
+      <tr><th>Instruments</th><td>{{len .Symbols}}</td></tr>
+      <tr><th>Data source</th><td>{{.DataSource}}</td></tr>
+      <tr><th>Wall time</th><td>{{.Duration}}</td></tr>
+      {{if .ForcedExits}}
+      <tr><th>Forced exits</th><td class="warn">{{.ForcedExits}} position(s) closed at the window end</td></tr>
+      {{end}}
+      {{if .WarmupSkips}}
+      <tr><th>Warmup rejects</th><td>{{.WarmupSkips}} order(s)</td></tr>
+      {{end}}
+    </table>
+  </section>
+</div>
+
+{{if not .Trades}}
+<section class="card">
+  <p class="alert alert-warn">
+    <b>The strategy placed no trades.</b> Most often this means no historical
+    data was available for the seed symbols over that window, or the instrument
+    snapshot for those dates was never captured. Check <a href="/research">Research</a>
+    for the same symbol and range.
+  </p>
+</section>
+{{else}}
+<section class="card">
+  <h2>Trades</h2>
+  <table class="grid-table">
+    <thead>
+      <tr>
+        <th>#</th><th>Symbol</th><th>Side</th><th class="r">Qty</th>
+        <th>Entry</th><th class="r">Price</th>
+        <th>Exit</th><th class="r">Price</th>
+        <th class="r">Costs</th><th class="r">Net</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Trades}}
+      <tr>
+        <td class="mono">{{.Seq}}</td>
+        <td class="mono">{{.TradingSymbol}}</td>
+        <td class="{{if eq (printf "%s" .Direction) "BUY"}}pnl-up{{else}}pnl-down{{end}}">{{.Direction}}</td>
+        <td class="r mono">{{.Quantity}}</td>
+        <td class="mono">{{ist .EntryTime}}</td>
+        <td class="r mono">{{num .EntryPrice}}</td>
+        <td class="mono">{{ist .ExitTime}}</td>
+        <td class="r mono">{{num .ExitPrice}}</td>
+        <td class="r mono muted">{{money .Costs}}</td>
+        <td class="r mono {{pnlClass .NetPnL}}">{{signed .NetPnL}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  <p class="muted small">
+    Equity is capital plus cumulative net P&amp;L. Margin is not modelled, so for
+    an option-selling strategy the return percentage is a comparison between runs
+    rather than a true account return.
+  </p>
+</section>
+{{end}}
+{{end}}
+
+{{template "foot" .}}
+{{end}}

@@ -23,6 +23,10 @@ import (
 	"kite-algo/internal/events"
 	"kite-algo/internal/risk"
 	"kite-algo/internal/storage"
+	"kite-algo/internal/strategy"
+
+	// Links the built-in strategies into the binary so they self-register.
+	_ "kite-algo/internal/strategy/catalog"
 )
 
 // App wires and supervises the platform.
@@ -50,16 +54,17 @@ type App struct {
 
 // Status is everything the UI header needs in one struct.
 type Status struct {
-	Mode        config.Mode `json:"mode"`
-	LiveArmed   bool        `json:"live_armed"`  // configured for live, awaiting confirmation
-	LiveActive  bool        `json:"live_active"` // real orders are being routed
-	Kite        SessionInfo `json:"kite"`
-	Streaming   bool        `json:"streaming"`
-	BootAt      time.Time   `json:"boot_at"`
-	Uptime      string      `json:"uptime"`
-	DayPnL      float64     `json:"day_pnl"`
-	RiskLimits  risk.Limits `json:"risk_limits"`
-	RedirectURL string      `json:"redirect_url"`
+	Mode        config.Mode      `json:"mode"`
+	LiveArmed   bool             `json:"live_armed"`  // configured for live, awaiting confirmation
+	LiveActive  bool             `json:"live_active"` // real orders are being routed
+	Kite        SessionInfo      `json:"kite"`
+	Streaming   bool             `json:"streaming"`
+	BootAt      time.Time        `json:"boot_at"`
+	Uptime      string           `json:"uptime"`
+	DayPnL      float64          `json:"day_pnl"`
+	RiskLimits  risk.Limits      `json:"risk_limits"`
+	Halt        engine.HaltState `json:"halt"`
+	RedirectURL string           `json:"redirect_url"`
 }
 
 // New builds the platform without touching the network.
@@ -87,6 +92,7 @@ func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog
 	eng := engine.New(paper, store, riskMgr, cfg.Recording.Ticks, log,
 		engine.WithEventPublisher(bus),
 		engine.WithStrategyConfigs(strategyConfigs(cfg)),
+		engine.WithRegistry(strategy.Default),
 	)
 
 	secure := !config.IsLoopbackAddr(cfg.Web.Addr)
@@ -116,7 +122,57 @@ func (a *App) Run(ctx context.Context) error {
 	go a.Kite.Supervise(ctx)
 	go a.Sessions.GC(ctx, time.Hour)
 	go a.guardSweep(ctx)
+	go a.autoStartStrategies(ctx)
 	return a.Engine.Start(ctx)
+}
+
+// autoStartStrategies starts the strategies marked enabled in config.yaml.
+//
+// It waits for a Zerodha session first: a strategy started without an
+// instrument master cannot resolve its option chain, so it would sit idle and
+// look broken. Once market data is up, config-enabled strategies come online by
+// themselves — which is what makes an unattended restart resume trading.
+func (a *App) autoStartStrategies(ctx context.Context) {
+	enabled := make([]config.StrategyCfg, 0, len(a.Cfg.Strategies))
+	for _, sc := range a.Cfg.Strategies {
+		if sc.Enabled {
+			enabled = append(enabled, sc)
+		}
+	}
+	if len(enabled) == 0 {
+		return
+	}
+
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if !a.Engine.HasMarketData() {
+				continue
+			}
+			for _, sc := range enabled {
+				if _, running := a.Engine.StrategyStatusByID(sc.Name); running {
+					continue
+				}
+				st, err := a.Engine.StartStrategy(ctx, engine.StrategySpec{
+					InstanceID: sc.Name,
+					Type:       sc.Name,
+					Params:     sc.Params,
+				})
+				if err != nil {
+					a.Log.Error("could not auto-start strategy from config",
+						"name", sc.Name, "err", err)
+					continue
+				}
+				a.Log.Info("auto-started strategy from config",
+					"name", sc.Name, "state", st.State)
+			}
+			return
+		}
+	}
 }
 
 // Shutdown stops strategies and releases resources.
@@ -143,6 +199,7 @@ func (a *App) Status() Status {
 		Uptime:      time.Since(a.bootAt).Round(time.Second).String(),
 		DayPnL:      a.Engine.DayPnL(),
 		RiskLimits:  a.Risk.Limits(),
+		Halt:        a.Engine.HaltState(),
 		RedirectURL: a.Cfg.KiteRedirectURL(),
 	}
 }
@@ -225,6 +282,29 @@ func (a *App) DisarmLive(ctx context.Context) {
 		Level:   events.LevelWarn,
 		Message: "live trading disarmed — new orders are simulated",
 		Fields:  map[string]any{"live_active": false},
+	})
+}
+
+// SetRiskLimits updates the live risk limits.
+//
+// Limits are runtime state, not config: when a position is moving against you,
+// tightening the daily-loss cap should not require editing a YAML file and
+// restarting the process that is holding the position.
+func (a *App) SetRiskLimits(l risk.Limits) {
+	old := a.Risk.Limits()
+	a.Risk.SetLimits(l)
+
+	if a.Log != nil {
+		a.Log.Warn("risk limits changed",
+			"max_daily_loss", l.MaxDailyLoss, "was", old.MaxDailyLoss,
+			"max_order_value", l.MaxOrderValue,
+			"max_lots_per_trade", l.MaxLotsPerTrade,
+			"max_open_positions", l.MaxOpenPositions)
+	}
+	a.Bus.Publish(events.Event{
+		Kind:    events.KindStatus,
+		Level:   events.LevelWarn,
+		Message: "risk limits updated",
 	})
 }
 

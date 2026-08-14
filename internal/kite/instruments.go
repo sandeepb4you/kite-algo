@@ -80,6 +80,22 @@ func (m *Instruments) Search(query string, limit int) []Instrument {
 	return matches
 }
 
+// All returns every instrument in the master, sorted by trading symbol.
+//
+// Used to snapshot the master for backtesting. The sort makes the output
+// deterministic, which matters because a snapshot is a persisted artefact.
+func (m *Instruments) All() []Instrument {
+	out := make([]Instrument, 0, len(m.bySymbol))
+	for _, inst := range m.bySymbol {
+		out = append(out, *inst)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TradingSymbol < out[j].TradingSymbol })
+	return out
+}
+
+// Len reports how many instruments are loaded.
+func (m *Instruments) Len() int { return len(m.bySymbol) }
+
 // LookupToken returns an instrument by its Kite instrument token.
 func (m *Instruments) LookupToken(token uint32) (*Instrument, bool) {
 	i, ok := m.byToken[token]

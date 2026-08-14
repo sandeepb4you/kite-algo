@@ -1,0 +1,47 @@
+{{define "risk.html"}}
+{{template "head" .}}
+
+<div class="card card-form">
+  <h1>Risk limits</h1>
+  <p class="muted">
+    Applied before every order, whether it came from a strategy or from the
+    terminal. Changes take effect on the next order; orders already with the
+    broker are unaffected.
+  </p>
+  <p class="muted small">
+    Set any limit to <code>0</code> to disable that check. Limits are held in
+    memory — they revert to <code>config.yaml</code> on restart.
+  </p>
+
+  <form method="post" action="/api/risk/limits" data-result="#action-result"
+        data-confirm="Update the live risk limits?">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+
+    <label for="max_daily_loss">Max daily loss (₹)</label>
+    <input id="max_daily_loss" name="max_daily_loss" type="number" step="any" min="0"
+           value="{{num .Data.MaxDailyLoss}}">
+    <p class="muted small">
+      Blocks new entries once the day's P&amp;L falls below this. Closing orders
+      are always allowed — a loss limit must never trap you in a position.
+    </p>
+
+    <label for="max_order_value">Max order value (₹)</label>
+    <input id="max_order_value" name="max_order_value" type="number" step="any" min="0"
+           value="{{num .Data.MaxOrderValue}}">
+
+    <label for="max_lots_per_trade">Max lots per order</label>
+    <input id="max_lots_per_trade" name="max_lots_per_trade" type="number" step="1" min="0"
+           value="{{.Data.MaxLotsPerTrade}}">
+
+    <label for="max_open_positions">Max open positions</label>
+    <input id="max_open_positions" name="max_open_positions" type="number" step="1" min="0"
+           value="{{.Data.MaxOpenPositions}}">
+
+    <button class="btn btn-primary" type="submit">Update limits</button>
+  </form>
+
+  <div id="action-result" aria-live="polite"></div>
+</div>
+
+{{template "foot" .}}
+{{end}}

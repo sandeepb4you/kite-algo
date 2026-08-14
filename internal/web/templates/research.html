@@ -1,0 +1,93 @@
+{{define "research.html"}}
+{{template "head" .}}
+
+{{/* Instrument capture is the one thing here that cannot be fixed later:
+     Kite drops expired contracts from its feed, so a day without a snapshot is
+     a day that can never be backtested. Surface it prominently. */}}
+{{if not .Data.Snapshots.HaveToday}}
+<p class="alert alert-warn">
+  <b>No instrument snapshot for {{.Data.Snapshots.AsOf}} yet.</b>
+  It is written automatically when you connect to Zerodha. Until then, contracts
+  expiring today will not be resolvable for future backtests — and Kite cannot
+  supply that data again once they expire.
+</p>
+{{end}}
+
+<div class="card card-form">
+  <h1>Historical data</h1>
+  <p class="muted small">
+    Candles are cached locally, so a repeat request for the same window costs
+    nothing. Only uncovered gaps are fetched, and non-trading days are skipped.
+  </p>
+
+  <form method="get" action="/research">
+    <label for="symbol">Trading symbol</label>
+    <input id="symbol" name="symbol" type="text" value="{{.Data.Symbol}}"
+           placeholder="NIFTY24AUG24500CE" autocomplete="off" spellcheck="false" required>
+
+    <div class="row">
+      <div>
+        <label for="interval">Interval</label>
+        <select id="interval" name="interval">
+          {{$sel := .Data.Interval}}
+          {{range .Data.Intervals}}
+            <option value="{{.}}" {{if eq (printf "%s" .) $sel}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div>
+        <label for="from">From</label>
+        <input id="from" name="from" type="date" value="{{.Data.From}}">
+      </div>
+      <div>
+        <label for="to">To</label>
+        <input id="to" name="to" type="date" value="{{.Data.To}}">
+      </div>
+    </div>
+
+    <button class="btn btn-primary" type="submit">Load candles</button>
+  </form>
+
+  {{if .Data.Error}}
+    <p class="alert alert-error">{{.Data.Error}}</p>
+  {{end}}
+</div>
+
+{{if .Data.Candles}}
+<section class="card">
+  <h2>{{.Data.Symbol}} · {{.Data.Interval}} · {{len .Data.Candles}} bars</h2>
+  <p class="muted small">Source: {{.Data.Source}}</p>
+
+  {{/* The chart fetches its data from /api/candles rather than embedding it
+       inline: the CSP forbids inline script, and a year of minute bars would
+       bloat the HTML. chart.js (ours, ~90 lines) renders it on a canvas. */}}
+  <canvas id="chart" height="320"
+          data-candles="/api/candles?symbol={{.Data.Symbol}}&interval={{.Data.Interval}}&from={{.Data.From}}&to={{.Data.To}}"
+          aria-label="Price chart for {{.Data.Symbol}}"></canvas>
+
+  <details>
+    <summary class="muted small">Show the last 50 bars as a table</summary>
+    <table class="grid-table">
+      <thead>
+        <tr><th>Time (IST)</th><th class="r">Open</th><th class="r">High</th>
+            <th class="r">Low</th><th class="r">Close</th><th class="r">Volume</th></tr>
+      </thead>
+      <tbody>
+      {{range .Data.Recent}}
+        <tr>
+          <td class="mono">{{ist .OpenTime}}</td>
+          <td class="r mono">{{num .Open}}</td>
+          <td class="r mono">{{num .High}}</td>
+          <td class="r mono">{{num .Low}}</td>
+          <td class="r mono">{{num .Close}}</td>
+          <td class="r mono">{{.Volume}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </details>
+</section>
+{{end}}
+
+{{template "foot" .}}
+{{end}}

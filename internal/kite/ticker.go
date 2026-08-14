@@ -16,14 +16,14 @@ import (
 // Kite Connect WebSocket exchange-segment constants (low byte of instrument
 // token). Used to pick the correct price divisor when decoding binary ticks.
 const (
-	segNSE    = 1
-	segNFO    = 2
-	segCDS    = 3
-	segBSE    = 4
-	segBFO    = 5
-	segBCD    = 6
-	segMCX    = 7
-	segMCXSX  = 8
+	segNSE     = 1
+	segNFO     = 2
+	segCDS     = 3
+	segBSE     = 4
+	segBFO     = 5
+	segBCD     = 6
+	segMCX     = 7
+	segMCXSX   = 8
 	segIndices = 9
 )
 
@@ -81,7 +81,7 @@ type Ticker struct {
 	apiKey      string
 	accessToken string
 	url         string
-	instruments *Instruments    // optional, used to enrich ticks with symbols
+	instruments *Instruments // optional, used to enrich ticks with symbols
 	logger      *slog.Logger
 
 	mu            sync.Mutex
@@ -105,13 +105,13 @@ type Ticker struct {
 // symbols on every tick; otherwise ticks carry only the numeric token.
 func NewTicker(apiKey, accessToken, tickerURL string, instruments *Instruments, logger *slog.Logger) *Ticker {
 	return &Ticker{
-		apiKey:           apiKey,
-		accessToken:      accessToken,
-		url:              tickerURL,
-		instruments:      instruments,
-		logger:           logger,
-		subscriptions:    make(map[uint32]marketdata.Mode),
-		stop:             make(chan struct{}),
+		apiKey:            apiKey,
+		accessToken:       accessToken,
+		url:               tickerURL,
+		instruments:       instruments,
+		logger:            logger,
+		subscriptions:     make(map[uint32]marketdata.Mode),
+		stop:              make(chan struct{}),
 		reconnectMinDelay: 1 * time.Second,
 		reconnectMaxDelay: 60 * time.Second,
 	}

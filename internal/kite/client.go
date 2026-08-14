@@ -34,13 +34,21 @@ const APIVersion = "3"
 
 // Client is a Kite Connect REST client.
 type Client struct {
-	apiKey       string
-	apiSecret    string
-	accessToken  string
-	baseURL      string
-	http         *http.Client
-	limiter      *ratelimiter.Limiter
-	logger       *slog.Logger
+	apiKey      string
+	apiSecret   string
+	accessToken string
+	baseURL     string
+	http        *http.Client
+	limiter     *ratelimiter.Limiter
+	// histLimiter is a SEPARATE budget for historical-data requests.
+	//
+	// Backfilling an option chain is thousands of requests. Sharing the main
+	// limiter would let a backfill queue ahead of order placement and delay an
+	// entry or — far worse — a square-off by seconds. Kite meters historical
+	// data separately, so using one bucket for both is needlessly self-limiting
+	// as well as dangerous.
+	histLimiter *ratelimiter.Limiter
+	logger      *slog.Logger
 }
 
 // New returns a Client. apiSecret may be empty if you only intend to use a
@@ -55,8 +63,9 @@ func New(apiKey, apiSecret, accessToken, baseURL string, logger *slog.Logger) *C
 		http:        &http.Client{Timeout: 30 * time.Second},
 		// Kite allows ~3 order requests/sec; 3 is a safe global default for the
 		// non-order endpoints too (they share an overall throttle).
-		limiter: ratelimiter.New(3),
-		logger:  logger,
+		limiter:     ratelimiter.New(3),
+		histLimiter: ratelimiter.New(3),
+		logger:      logger,
 	}
 }
 
@@ -110,7 +119,7 @@ func (c *Client) GenerateSession(ctx context.Context, requestToken string) (stri
 			AccessToken string `json:"access_token"`
 			UserID      string `json:"user_id"`
 		} `json:"data"`
-		Message string `json:"message"`
+		Message   string `json:"message"`
 		ErrorType string `json:"error_type"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
@@ -131,7 +140,21 @@ func (c *Client) GenerateSession(ctx context.Context, requestToken string) (stri
 // unwrapping the standard {status, data, message} envelope. v receives the
 // decoded "data" payload.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, form url.Values, v any) error {
-	if err := c.limiter.Wait(ctx); err != nil {
+	return c.doLimited(ctx, c.limiter, method, path, query, form, v)
+}
+
+// getLimited is a GET drawing on a specific rate-limit budget.
+func (c *Client) getLimited(ctx context.Context, lim *ratelimiter.Limiter, path string, query url.Values, v any) error {
+	return c.doLimited(ctx, lim, http.MethodGet, path, query, nil, v)
+}
+
+// doLimited is `do` with an explicit limiter, so historical backfills draw on
+// their own budget instead of competing with order placement.
+func (c *Client) doLimited(ctx context.Context, lim *ratelimiter.Limiter, method, path string, query url.Values, form url.Values, v any) error {
+	if lim == nil {
+		lim = c.limiter
+	}
+	if err := lim.Wait(ctx); err != nil {
 		return err
 	}
 

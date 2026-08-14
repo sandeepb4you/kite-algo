@@ -21,6 +21,7 @@ import (
 	"kite-algo/internal/config"
 	"kite-algo/internal/engine"
 	"kite-algo/internal/events"
+	"kite-algo/internal/history"
 	"kite-algo/internal/kite"
 	"kite-algo/internal/storage"
 )
@@ -289,6 +290,19 @@ func (s *KiteSession) Activate(ctx context.Context, token string, persist bool) 
 
 	if s.eng != nil {
 		s.eng.AttachMarketData(instruments, ticker)
+	}
+
+	// Snapshot the instrument master before doing anything else with it.
+	//
+	// Kite lists only live contracts, and historical candles are keyed by
+	// instrument token — so an expired option becomes permanently unresolvable.
+	// Every session without a snapshot is a trading day that can never be
+	// backtested, and no later action can recover it.
+	if hs, ok := s.store.(storage.HistoryStore); ok {
+		if err := history.SnapshotInstruments(ctx, hs, instruments, now, s.logger); err != nil && s.logger != nil {
+			s.logger.Error("could not snapshot the instrument master; "+
+				"today will not be backtestable", "err", err)
+		}
 	}
 
 	if s.logger != nil {

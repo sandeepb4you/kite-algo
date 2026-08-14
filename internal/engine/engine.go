@@ -12,10 +12,12 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"kite-algo/internal/broker"
@@ -44,9 +46,23 @@ type Engine struct {
 	// non-blocking and lossy by design; see package events.
 	pub events.Publisher
 
-	strategies []strategy.Strategy
 	// strategyConfigs maps a strategy Name() to its declarative config block.
 	strategyConfigs map[string]config.StrategyCfg
+
+	// registry builds strategy instances by type name, so the UI can start one
+	// at runtime without the binary knowing every strategy at compile time.
+	registry *strategy.Registry
+
+	// Strategy instances are mutated at runtime by HTTP handlers and read on
+	// every tick by the market-data goroutine. smu serializes lifecycle
+	// transitions; active is a copy-on-write snapshot the hot path reads with no
+	// lock at all. Never mutate the slice inside active in place.
+	smu     sync.Mutex
+	handles map[string]*strategyHandle
+	active  atomic.Pointer[[]*strategyHandle]
+
+	// halt is the kill switch, checked before every order.
+	halt haltGuard
 
 	mu        sync.RWMutex
 	prices    map[string]float64 // symbol -> last price
@@ -136,6 +152,7 @@ func New(b broker.Broker, store storage.Store, r *risk.Manager, recordTicks bool
 		liveSeen:    make(map[string]int),
 		wanted:      make(map[string]struct{}),
 		pinned:      make(map[string]struct{}),
+		handles:     make(map[string]*strategyHandle),
 		pub:         events.Nop{},
 	}
 	for _, opt := range opts {
@@ -144,9 +161,31 @@ func New(b broker.Broker, store storage.Store, r *risk.Manager, recordTicks bool
 	return e
 }
 
-// AddStrategy registers a strategy. Must be called before Start.
+// WithRegistry attaches the strategy registry, enabling runtime start/stop.
+func WithRegistry(r *strategy.Registry) Option {
+	return func(e *Engine) { e.registry = r }
+}
+
+// AddStrategy registers an already-constructed strategy instance.
+//
+// Prefer StartStrategy, which builds the instance from the registry and
+// validates its parameters. This exists for tests and for callers holding a
+// concrete strategy value.
 func (e *Engine) AddStrategy(s strategy.Strategy) {
-	e.strategies = append(e.strategies, s)
+	e.smu.Lock()
+	defer e.smu.Unlock()
+
+	id := s.Name()
+	e.handles[id] = &strategyHandle{
+		id:        id,
+		typ:       id,
+		inst:      s,
+		params:    map[string]any{},
+		cancel:    func() {},
+		state:     StateRunning,
+		startedAt: time.Now(),
+	}
+	e.rebuildActiveLocked()
 }
 
 // Start initializes strategies and background loops, then blocks until ctx is
@@ -171,12 +210,13 @@ func (e *Engine) Start(ctx context.Context) error {
 		pb.SetOnFill(e.handleFill)
 	}
 
-	// Initialize strategies, handing each one the engine (as Trader) and its cfg.
-	for _, s := range e.strategies {
+	// Initialize any strategies added before Start (the AddStrategy path).
+	// Instances created later via StartStrategy are initialized on creation.
+	for _, h := range e.activeStrategies() {
 		if e.logger != nil {
-			e.logger.Info("initializing strategy", "name", s.Name())
+			e.logger.Info("initializing strategy", "name", h.id)
 		}
-		if err := s.Init(ctx, e, e.configFor(s.Name())); err != nil {
+		if err := h.inst.Init(ctx, e, e.configFor(h.id)); err != nil {
 			return err
 		}
 	}
@@ -381,11 +421,17 @@ func (e *Engine) wantedSymbols() []string {
 	return out
 }
 
-// Stop shuts down strategies.
+// Stop shuts down every running strategy, squaring off their positions.
+//
+// The square-off is deliberate and preserves the previous Ctrl-C behaviour: a
+// process going down should not leave naked short options open overnight.
+// Strategy.Stop itself no longer trades, so the engine has to ask for this
+// explicitly.
 func (e *Engine) Stop(ctx context.Context) {
-	for _, s := range e.strategies {
-		if err := s.Stop(ctx); err != nil && e.logger != nil {
-			e.logger.Error("strategy stop failed", "name", s.Name(), "err", err)
+	errs := e.StopAllStrategies(ctx, StopOptions{SquareOff: true, Reason: "shutdown"})
+	for _, err := range errs {
+		if e.logger != nil {
+			e.logger.Error("strategy shutdown failed", "err", err)
 		}
 	}
 }
@@ -393,7 +439,36 @@ func (e *Engine) Stop(ctx context.Context) {
 // --- strategy.Trader implementation ---
 
 // PlaceOrder risk-checks and submits an order on behalf of a strategy.
+//
+// The kill switch is checked first, before the risk manager and before the
+// broker. Trader is the only route a strategy has to the market, so this single
+// check is what makes "halt" mean halt.
 func (e *Engine) PlaceOrder(ctx context.Context, req broker.OrderRequest) (*broker.Order, error) {
+	if e.IsHalted() {
+		err := e.haltError()
+		if e.logger != nil {
+			e.logger.Warn("order blocked by kill switch",
+				"symbol", req.TradingSymbol, "strategy", req.StrategyID)
+		}
+		e.pub.Publish(events.Event{
+			Kind:       events.KindOrderRejected,
+			Symbol:     req.TradingSymbol,
+			StrategyID: req.StrategyID,
+			Level:      events.LevelError,
+			Message:    err.Error(),
+			Fields:     map[string]any{"rule": "kill-switch"},
+		})
+		return nil, err
+	}
+	return e.placeOrderInternal(ctx, req)
+}
+
+// placeOrderInternal is the order path without the kill-switch check.
+//
+// Engine-initiated square-offs use it: the whole point of halting is to stop
+// opening risk, and a halt that also blocked the flatten would leave the
+// operator holding a position they explicitly asked to close.
+func (e *Engine) placeOrderInternal(ctx context.Context, req broker.OrderRequest) (*broker.Order, error) {
 	lotSize := e.LotSize(req.TradingSymbol)
 	openPositions := e.snapshotPositionCount(req.TradingSymbol)
 	dayPnL := e.snapshotDayPnL()
@@ -436,6 +511,7 @@ func (e *Engine) PlaceOrder(ctx context.Context, req broker.OrderRequest) (*brok
 	}
 	// Remember which strategy owns this order so fills route correctly.
 	e.orderStrategy.Store(e.orderKey(o), req.StrategyID)
+	e.countOrder(req.StrategyID)
 
 	if err := e.store.SaveOrder(ctx, o); err != nil && e.logger != nil {
 		e.logger.Error("persist order failed", "id", o.ID, "err", err)
@@ -452,6 +528,55 @@ func (e *Engine) PlaceOrder(ctx context.Context, req broker.OrderRequest) (*brok
 // CancelOrder cancels a previously placed order.
 func (e *Engine) CancelOrder(ctx context.Context, orderID string) error {
 	return e.currentBroker().CancelOrder(ctx, orderID)
+}
+
+// Now returns wall-clock time. Strategies call this instead of time.Now() so a
+// backtest can substitute simulated time; see strategy.Trader.
+func (e *Engine) Now() time.Time { return time.Now() }
+
+// Signal records a strategy-authored event and forwards it to the UI feed.
+func (e *Engine) Signal(s strategy.Signal) {
+	if s.At.IsZero() {
+		s.At = time.Now()
+	}
+	if s.Level == "" {
+		s.Level = "info"
+	}
+
+	if s.StrategyID != "" {
+		e.smu.Lock()
+		if h, ok := e.handles[s.StrategyID]; ok {
+			sig := s
+			h.lastSignal.Store(&sig)
+		}
+		e.smu.Unlock()
+	}
+
+	if e.logger != nil {
+		e.logger.Info("strategy signal",
+			"strategy", s.StrategyID, "kind", s.Kind, "msg", s.Message)
+	}
+	e.pub.Publish(events.Event{
+		Kind:       events.KindSignal,
+		At:         s.At,
+		Symbol:     s.Symbol,
+		StrategyID: s.StrategyID,
+		Level:      events.Level(s.Level),
+		Message:    s.Message,
+		Fields:     s.Data,
+	})
+}
+
+// countOrder increments a strategy's order counter for its status card.
+func (e *Engine) countOrder(strategyID string) {
+	if strategyID == "" {
+		return
+	}
+	e.smu.Lock()
+	if h, ok := e.handles[strategyID]; ok {
+		h.orders.Add(1)
+	}
+	e.smu.Unlock()
 }
 
 // LTP returns the latest known price for a symbol (0 if unknown).
@@ -682,9 +807,53 @@ func (e *Engine) handleTick(tick marketdata.Tick) {
 		pb.OnPrice(tick.TradingSymbol, tick.LastPrice)
 	}
 
-	for _, s := range e.strategies {
-		s.OnTick(context.Background(), tick)
+	for _, h := range e.activeStrategies() {
+		h.ticks.Add(1)
+		e.deliverTick(h, tick)
 	}
+}
+
+// HandleTickForTest feeds a tick through the engine's normal market-data path.
+//
+// Exported solely so the backtest package can drive the production engine with a
+// known price series and assert that paper trading and backtesting execute
+// identically. Nothing in the running platform should call it.
+func (e *Engine) HandleTickForTest(tick marketdata.Tick) { e.handleTick(tick) }
+
+// deliverTick calls one strategy's OnTick, containing any panic.
+//
+// The fan-out runs on the ticker's read goroutine, so an unrecovered panic in
+// one strategy would kill the process — taking down market data, every other
+// strategy, and the web UI with it, while positions stayed open in the market.
+// A misbehaving strategy is quarantined instead.
+func (e *Engine) deliverTick(h *strategyHandle, tick marketdata.Tick) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			e.quarantine(h, fmt.Sprintf("panic in OnTick: %v", rec))
+		}
+	}()
+	h.inst.OnTick(context.Background(), tick)
+}
+
+// quarantine marks a strategy errored and removes it from the fan-out.
+func (e *Engine) quarantine(h *strategyHandle, reason string) {
+	if e.logger != nil {
+		e.logger.Error("strategy quarantined after failure",
+			"id", h.id, "reason", reason)
+	}
+	e.smu.Lock()
+	h.state = StateErrored
+	h.lastErr = reason
+	e.rebuildActiveLocked()
+	e.smu.Unlock()
+
+	e.pub.Publish(events.Event{
+		Kind:       events.KindStatus,
+		StrategyID: h.id,
+		Level:      events.LevelError,
+		Message:    "strategy " + h.id + " stopped after a failure: " + reason,
+		Fields:     map[string]any{"strategy_state": string(StateErrored)},
+	})
 }
 
 // handleFill records a fill and routes it to the owning strategy.
@@ -703,11 +872,23 @@ func (e *Engine) handleFill(fill broker.Fill) {
 		StrategyID: fill.StrategyID,
 		Fill:       &fill,
 	})
-	for _, s := range e.strategies {
-		if fill.StrategyID == "" || fill.StrategyID == s.Name() {
-			s.OnFill(context.Background(), fill)
+	for _, h := range e.activeStrategies() {
+		if fill.StrategyID != "" && fill.StrategyID != h.id {
+			continue
 		}
+		h.fills.Add(1)
+		e.deliverFill(h, fill)
 	}
+}
+
+// deliverFill calls one strategy's OnFill, containing any panic.
+func (e *Engine) deliverFill(h *strategyHandle, fill broker.Fill) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			e.quarantine(h, fmt.Sprintf("panic in OnFill: %v", rec))
+		}
+	}()
+	h.inst.OnFill(context.Background(), fill)
 }
 
 // handleOrderUpdate turns a live ticker order-update into a fill (best-effort).

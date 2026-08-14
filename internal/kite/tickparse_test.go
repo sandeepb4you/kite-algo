@@ -62,7 +62,10 @@ func TestParseQuote(t *testing.T) {
 		t.Fatalf("got %d ticks, want 1", len(ticks))
 	}
 	tk := ticks[0]
-	checks := []struct{ name string; got, want float64 }{
+	checks := []struct {
+		name      string
+		got, want float64
+	}{
 		{"last_price", tk.LastPrice, 150.0},
 		{"volume", float64(tk.Volume), 1000},
 		{"buy_qty", float64(tk.BuyQuantity), 500},

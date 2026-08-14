@@ -48,6 +48,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	st := s.app.Status()
 	published, dropped, subscribers := s.app.Bus.Stats()
 
+	// A halt is reported here so a monitor can alert on it: an unattended server
+	// that halted overnight looks perfectly healthy by every other measure while
+	// silently trading nothing.
 	body := map[string]any{
 		"status":          "ok",
 		"mode":            st.Mode,
@@ -55,6 +58,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"streaming":       st.Streaming,
 		"live_active":     st.LiveActive,
 		"order_routing":   s.app.Engine.BrokerMode(),
+		"halted":          st.Halt.Halted,
+		"halt_reason":     st.Halt.Reason,
+		"strategies":      len(s.app.Engine.ListStrategies()),
 		"uptime":          st.Uptime,
 		"events_total":    published,
 		"events_dropped":  dropped,

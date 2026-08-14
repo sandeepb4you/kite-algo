@@ -16,11 +16,12 @@ import (
 //	  [packet_length B] payload
 //
 // Payload layout depends on length:
-//	  8  B : LTP                       (token, last_price)
-//	  28 B : indices quote             (token, last_price, OHLC[h,l,o,c])
-//	  32 B : indices full              (28B + exchange timestamp)
-//	  44 B : standard quote            (token, ltp, ltq, avg, vol, buy_q, sell_q, OHLC[o,h,l,c])
-//	  184B : standard full             (44B + last_trade_time, oi, oi_high, oi_low, ts, depth)
+//
+//	8  B : LTP                       (token, last_price)
+//	28 B : indices quote             (token, last_price, OHLC[h,l,o,c])
+//	32 B : indices full              (28B + exchange timestamp)
+//	44 B : standard quote            (token, ltp, ltq, avg, vol, buy_q, sell_q, OHLC[o,h,l,c])
+//	184B : standard full             (44B + last_trade_time, oi, oi_high, oi_low, ts, depth)
 func parseBinaryTicks(frame []byte) []marketdata.Tick {
 	packets, ok := splitPackets(frame)
 	if !ok {

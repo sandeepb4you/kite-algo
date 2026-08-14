@@ -1,0 +1,62 @@
+{{define "strategy_new.html"}}
+{{template "head" .}}
+
+<div class="card card-form">
+  <h1>{{.Data.Title}}</h1>
+  <p class="muted">{{.Data.Summary}}</p>
+
+  {{/* Every field below is generated from the strategy's declared ParamSpec
+       list. Adding a strategy, or a parameter to one, needs no template change
+       and no new validation code. */}}
+  <form method="post" action="/api/strategies" data-result="#action-result">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <input type="hidden" name="type" value="{{.Data.Type}}">
+
+    <label for="instance_id">Instance name</label>
+    <input id="instance_id" name="instance_id" type="text" value="{{.Data.Type}}"
+           pattern="[A-Za-z0-9._#-]+" required>
+    <p class="muted small">
+      Tags every order and position this instance creates. Use a distinct name to
+      run more than one copy with different settings.
+    </p>
+
+    {{range .Data.Params}}
+      <label for="{{.Key}}">{{.Label}}</label>
+      {{if eq (printf "%s" .Kind) "enum"}}
+        <select id="{{.Key}}" name="{{.Key}}">
+          {{$def := printf "%v" .Default}}
+          {{range .Options}}
+            <option value="{{.}}" {{if eq . $def}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      {{else if eq (printf "%s" .Kind) "bool"}}
+        <input id="{{.Key}}" name="{{.Key}}" type="checkbox" value="true"
+               {{if .Default}}checked{{end}}>
+      {{else if eq (printf "%s" .Kind) "time"}}
+        <input id="{{.Key}}" name="{{.Key}}" type="time" value="{{.Default}}">
+      {{else if eq (printf "%s" .Kind) "int"}}
+        <input id="{{.Key}}" name="{{.Key}}" type="number" step="1"
+               value="{{.Default}}"
+               {{if .Min}}min="{{.Min}}"{{end}} {{if .Max}}max="{{.Max}}"{{end}}>
+      {{else if eq (printf "%s" .Kind) "float"}}
+        <input id="{{.Key}}" name="{{.Key}}" type="number" step="any"
+               value="{{.Default}}"
+               {{if .Min}}min="{{.Min}}"{{end}} {{if .Max}}max="{{.Max}}"{{end}}>
+      {{else}}
+        <input id="{{.Key}}" name="{{.Key}}" type="text" value="{{.Default}}">
+      {{end}}
+      {{if .Description}}<p class="muted small">{{.Description}}</p>{{end}}
+    {{end}}
+
+    <button class="btn btn-primary" type="submit">Start strategy</button>
+  </form>
+
+  <div id="action-result" aria-live="polite"></div>
+
+  <p class="muted small">
+    <a href="/strategies">← Back to strategies</a>
+  </p>
+</div>
+
+{{template "foot" .}}
+{{end}}

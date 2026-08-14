@@ -104,7 +104,14 @@ func (e *Engine) flatten(ctx context.Context, p broker.Position) (*broker.Order,
 			"qty", qty, "side", side)
 	}
 
-	return e.PlaceOrder(ctx, broker.OrderRequest{
+	// placeOrderInternal, NOT PlaceOrder: a square-off must bypass the kill
+	// switch. Halting exists to stop opening new risk, and the panic button
+	// halts before it flattens — routing this through the public path would
+	// make the kill switch block its own square-off, leaving the operator
+	// frozen holding everything they just asked to close.
+	//
+	// The risk manager still runs; IntentClose exempts the exposure limits.
+	return e.placeOrderInternal(ctx, broker.OrderRequest{
 		StrategyID:    p.StrategyID,
 		Intent:        broker.IntentClose,
 		Exchange:      exchange,

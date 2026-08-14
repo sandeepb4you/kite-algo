@@ -47,25 +47,28 @@ type QuoteLevel struct {
 }
 
 // Candle is an OHLC bar aggregated over a fixed interval, used for storage and
-// later backtesting.
+// backtesting.
 type Candle struct {
 	InstrumentToken uint32
 	TradingSymbol   string
-	Interval        string // "1m", "5m", "15m", ...
+	Interval        string // "minute", "5minute", "day", ... (Kite's names)
 	Open            float64
 	High            float64
 	Low             float64
 	Close           float64
 	Volume          int64
-	OpenTime        time.Time
-	CloseTime       time.Time
+	// OpenInterest is meaningful for options and futures; zero elsewhere and
+	// zero for candles built from recorded ticks, which carry no OI.
+	OpenInterest int64
+	OpenTime     time.Time
+	CloseTime    time.Time
 }
 
 // Mode is the kind of market-data subscription requested from the ticker.
 type Mode string
 
 const (
-	ModeFull    Mode = "full"    // ltp + quote + depth
-	ModeQuote   Mode = "quote"   // ltp + quote (OHLC, volume)
-	ModeLTP     Mode = "ltp"     // last traded price only
+	ModeFull  Mode = "full"  // ltp + quote + depth
+	ModeQuote Mode = "quote" // ltp + quote (OHLC, volume)
+	ModeLTP   Mode = "ltp"   // last traded price only
 )

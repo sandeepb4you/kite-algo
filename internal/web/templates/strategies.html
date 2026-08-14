@@ -1,0 +1,146 @@
+{{define "strategies.html"}}
+{{template "head" .}}
+
+{{template "halt_banner" .Data.Halt}}
+
+<section class="card">
+  <h2>Kill switch</h2>
+  <p class="muted small">
+    Stops every running strategy and blocks all new orders. Square-off is a
+    separate choice — it places market orders to flatten everything you hold.
+  </p>
+  {{if .Data.Halt.Halted}}
+    <form method="post" action="/api/resume" data-result="#action-result"
+          data-confirm="Resume trading? Strategies stopped by the halt will NOT restart automatically."
+          class="inline">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <button class="btn btn-primary" type="submit">Resume trading</button>
+    </form>
+  {{else}}
+    <form method="post" action="/api/halt" data-result="#action-result"
+          data-confirm="HALT trading and stop all strategies?" class="inline">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <input type="hidden" name="square_off" value="false">
+      <button class="btn btn-danger" type="submit">Halt — stop strategies</button>
+    </form>
+    <form method="post" action="/api/halt" data-result="#action-result"
+          data-confirm="HALT trading, stop all strategies, AND square off every open position at market. This places real closing orders. Continue?"
+          class="inline">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <input type="hidden" name="square_off" value="true">
+      <button class="btn btn-danger" type="submit">PANIC — halt &amp; flatten everything</button>
+    </form>
+  {{end}}
+  <div id="action-result" aria-live="polite"></div>
+</section>
+
+<section class="card">
+  <h2>Running strategies</h2>
+  <div data-poll="/partials/strategies" data-poll-ms="4000">
+    {{template "strategy_cards" .}}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Start a strategy</h2>
+  {{if .Data.Available}}
+  <table class="grid-table">
+    <tbody>
+    {{range .Data.Available}}
+      <tr>
+        <td>
+          <b>{{.Title}}</b><br>
+          <span class="muted small">{{.Summary}}</span>
+        </td>
+        <td class="r"><a class="btn btn-quiet" href="/strategies/new?type={{.Type}}">Configure →</a></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+    <p class="muted">No strategies are registered in this build.</p>
+  {{end}}
+</section>
+
+{{template "foot" .}}
+{{end}}
+
+
+{{define "halt_banner"}}
+{{if .Halted}}
+<p class="alert alert-error">
+  <b>TRADING HALTED</b> — {{.Reason}} (by {{.By}} at {{istClock .At}} IST).
+  New orders are blocked.
+  {{if .SquaredOff}} All positions were squared off.{{end}}
+</p>
+{{end}}
+{{end}}
+
+
+{{define "strategy_cards"}}
+{{if .Data.Running}}
+  {{range .Data.Running}}
+  <div class="strategy-card">
+    <div class="strategy-head">
+      <span class="mono"><b>{{.InstanceID}}</b></span>
+      <span class="chip chip-{{if eq (printf "%s" .State) "running"}}ok{{else if eq (printf "%s" .State) "errored"}}bad{{else}}warn{{end}}">{{.State}}</span>
+      <span class="spacer"></span>
+      <span class="{{pnlClass .TotalPnL}}">₹{{signed .TotalPnL}}</span>
+    </div>
+
+    {{if .Error}}<p class="alert alert-error small">{{.Error}}</p>{{end}}
+
+    <p class="muted small">
+      {{.Title}} · started {{ist .StartedAt}} ·
+      {{.OrderCount}} order(s) · {{.FillCount}} fill(s) · {{.TickCount}} tick(s)
+    </p>
+
+    {{if .LastSignal}}
+      <p class="signal small"><b>{{.LastSignal.Kind}}</b> — {{.LastSignal.Message}}</p>
+    {{end}}
+
+    {{if .Positions}}
+    <table class="grid-table">
+      <thead><tr><th>Symbol</th><th class="r">Qty</th><th class="r">Avg</th><th class="r">LTP</th></tr></thead>
+      <tbody>
+      {{range .Positions}}
+        <tr>
+          <td class="mono">{{.TradingSymbol}}</td>
+          <td class="r mono">{{.NetQuantity}}</td>
+          <td class="r mono">{{num .AveragePrice}}</td>
+          <td class="r mono" data-ltp="{{.TradingSymbol}}">{{num .LastPrice}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{end}}
+
+    {{if eq (printf "%s" .State) "running"}}
+    <div class="strategy-actions">
+      {{/* Two explicit buttons rather than a checkbox: leaving short options
+           unmanaged and closing them without being asked are both bad, and only
+           the operator knows which they meant. */}}
+      <form method="post" action="/api/strategies/{{.InstanceID}}/stop"
+            data-result="#action-result"
+            data-confirm="Stop {{.InstanceID}} and LEAVE its positions open? Nothing will manage them afterwards."
+            class="inline">
+        <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="square_off" value="false">
+        <button class="btn btn-quiet btn-sm" type="submit">Stop, leave positions</button>
+      </form>
+      <form method="post" action="/api/strategies/{{.InstanceID}}/stop"
+            data-result="#action-result"
+            data-confirm="Stop {{.InstanceID}} and square off its positions at market?"
+            class="inline">
+        <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="square_off" value="true">
+        <button class="btn btn-danger btn-sm" type="submit">Stop &amp; square off</button>
+      </form>
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+{{else}}
+  <p class="muted">No strategies running.</p>
+{{end}}
+{{end}}

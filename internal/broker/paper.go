@@ -20,14 +20,15 @@ type FillCallback func(Fill)
 //
 // The engine calls OnPrice on every tick so the broker can fill pending orders.
 type PaperBroker struct {
-	mu       sync.Mutex
-	prices   map[string]float64             // trading symbol -> last price
-	orders   map[string]*Order              // order id -> order
-	pending  map[string]*Order              // order id -> pending (unfilled)
-	positions map[positionKey]*Position     // key -> position
-	onFill   FillCallback
-	logger   *slog.Logger
-	now      func() time.Time // injectable for tests
+	mu        sync.Mutex
+	prices    map[string]float64        // trading symbol -> last price
+	orders    map[string]*Order         // order id -> order
+	pending   map[string]*Order         // order id -> pending (unfilled)
+	positions map[positionKey]*Position // key -> position
+	onFill    FillCallback
+	logger    *slog.Logger
+	now       func() time.Time // injectable; a backtest supplies simulated time
+	fillModel FillModel        // injectable; a backtest supplies slippage
 }
 
 type positionKey struct {
@@ -48,6 +49,7 @@ func NewPaperBroker(onFill FillCallback, logger *slog.Logger) *PaperBroker {
 		onFill:    onFill,
 		logger:    logger,
 		now:       time.Now,
+		fillModel: defaultFillModel{},
 	}
 }
 
@@ -57,6 +59,59 @@ func (b *PaperBroker) SetOnFill(cb FillCallback) {
 	b.mu.Lock()
 	b.onFill = cb
 	b.mu.Unlock()
+}
+
+// SetClock replaces the broker's time source.
+//
+// A backtest injects simulated time so order and fill timestamps belong to the
+// period being replayed rather than to today. Without this, every fill in a
+// backtest of last month would be stamped with the wall clock, and the trade
+// ledger would be unusable.
+func (b *PaperBroker) SetClock(now func() time.Time) {
+	if now == nil {
+		return
+	}
+	b.mu.Lock()
+	b.now = now
+	b.mu.Unlock()
+}
+
+// FillModel decides the price a marketable order transacts at.
+//
+// The default reproduces this broker's original behaviour exactly. Backtests
+// substitute a model with slippage, so a simulated fill is not systematically
+// better than a real one would have been.
+type FillModel interface {
+	FillPrice(o *Order, marketPrice float64) float64
+}
+
+// SetFillModel replaces the execution price model.
+func (b *PaperBroker) SetFillModel(m FillModel) {
+	if m == nil {
+		return
+	}
+	b.mu.Lock()
+	b.fillModel = m
+	b.mu.Unlock()
+}
+
+// defaultFillModel fills at the market price, or at the limit for LIMIT orders.
+type defaultFillModel struct{}
+
+func (defaultFillModel) FillPrice(o *Order, marketPrice float64) float64 {
+	switch o.OrderType {
+	case OrderTypeMarket, OrderTypeSLM:
+		return marketPrice
+	case OrderTypeSL:
+		// SL (limit stop): fill at the limit price when one is set.
+		if o.Price > 0 {
+			return o.Price
+		}
+		return marketPrice
+	case OrderTypeLimit:
+		return o.Price
+	}
+	return marketPrice
 }
 
 // Mode reports "paper".
@@ -89,23 +144,23 @@ func (b *PaperBroker) PlaceOrder(ctx context.Context, req OrderRequest) (*Order,
 	}
 	now := b.now()
 	o := &Order{
-		ID:              uuid.NewString(),
-		ClientOrderID:   firstNonEmpty(req.ClientOrderID, uuid.NewString()),
-		StrategyID:      req.StrategyID,
-		Exchange:        req.Exchange,
-		TradingSymbol:   req.TradingSymbol,
-		Product:         req.Product,
-		OrderType:       req.OrderType,
-		Side:            req.Side,
-		Quantity:        req.Quantity,
-		Price:           req.Price,
-		TriggerPrice:    req.TriggerPrice,
-		Validity:        req.Validity,
-		Status:          StatusPending,
-		Tag:             req.Tag,
-		Mode:            "paper",
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:            uuid.NewString(),
+		ClientOrderID: firstNonEmpty(req.ClientOrderID, uuid.NewString()),
+		StrategyID:    req.StrategyID,
+		Exchange:      req.Exchange,
+		TradingSymbol: req.TradingSymbol,
+		Product:       req.Product,
+		OrderType:     req.OrderType,
+		Side:          req.Side,
+		Quantity:      req.Quantity,
+		Price:         req.Price,
+		TriggerPrice:  req.TriggerPrice,
+		Validity:      req.Validity,
+		Status:        StatusPending,
+		Tag:           req.Tag,
+		Mode:          "paper",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	b.mu.Lock()
@@ -207,7 +262,7 @@ func (b *PaperBroker) tryFill(o *Order, price float64) {
 		return
 	}
 	delete(b.pending, o.ID)
-	fillPrice := b.fillPrice(o, price)
+	fillPrice := b.fillModel.FillPrice(o, price)
 	o.FilledQuantity = o.Quantity
 	o.PendingQuantity = 0
 	o.Status = StatusComplete
@@ -258,23 +313,6 @@ func (b *PaperBroker) isMarketable(o *Order, price float64) bool {
 	return false
 }
 
-// fillPrice is the price at which a marketable order transacts.
-func (b *PaperBroker) fillPrice(o *Order, marketPrice float64) float64 {
-	switch o.OrderType {
-	case OrderTypeMarket, OrderTypeSLM:
-		return marketPrice
-	case OrderTypeSL:
-		// SL (limit stop): fill at trigger or worse, capped by limit price if set.
-		if o.Price > 0 {
-			return o.Price
-		}
-		return marketPrice
-	case OrderTypeLimit:
-		return o.Price
-	}
-	return marketPrice
-}
-
 // applyFillLocked updates positions for a fill. Caller holds b.mu.
 func (b *PaperBroker) applyFillLocked(f Fill) {
 	key := positionKey{f.StrategyID, f.TradingSymbol, ProductNRML}
@@ -292,38 +330,7 @@ func (b *PaperBroker) applyFillLocked(f Fill) {
 		}
 		b.positions[key] = p
 	}
-
-	signedQty := f.Quantity
-	if f.Side == SideSell {
-		signedQty = -f.Quantity
-	}
-
-	// If adding to the position, blend the average price. If reducing/closing,
-	// realize P&L on the reduced quantity.
-	if (p.NetQuantity >= 0 && signedQty > 0) || (p.NetQuantity <= 0 && signedQty < 0) {
-		totalQty := p.NetQuantity + signedQty
-		if totalQty != 0 {
-			p.AveragePrice = (p.AveragePrice*float64(absInt(p.NetQuantity)) + f.Price*float64(f.Quantity)) / float64(absInt(totalQty))
-		}
-		p.NetQuantity = totalQty
-	} else {
-		// Reducing or closing: realize PnL on the closed portion.
-		closingQty := absInt(signedQty)
-		if closingQty > absInt(p.NetQuantity) {
-			closingQty = absInt(p.NetQuantity)
-		}
-		sign := 1
-		if p.NetQuantity < 0 {
-			sign = -1
-		}
-		p.PnL += float64(sign) * (f.Price - p.AveragePrice) * float64(closingQty)
-		p.NetQuantity += signedQty
-		if p.NetQuantity == 0 {
-			p.AveragePrice = 0
-		}
-	}
-	p.LastPrice = f.Price
-	p.Updated = f.Timestamp
+	ApplyFill(p, f)
 }
 
 func firstNonEmpty(a, b string) string {

@@ -13,6 +13,7 @@ package shortstraddle
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"sync"
@@ -42,11 +43,18 @@ type Strategy struct {
 	product        broker.ProductType
 
 	mu      sync.Mutex
-	armed   bool                 // options subscribed?
-	entered bool                 // short straddle opened today?
-	exited  bool                 // squared off today (no re-entry)?
-	legs    map[string]leg       // symbol -> leg metadata
-	spot    float64              // last underlying spot
+	armed   bool           // options subscribed?
+	entered bool           // short straddle opened today?
+	exited  bool           // squared off today (no re-entry)?
+	legs    map[string]leg // symbol -> leg metadata
+	spot    float64        // last underlying spot
+
+	// session is the IST trading date the entered/exited flags belong to.
+	// Without it those flags are set once and never cleared, so the strategy
+	// trades exactly once for the lifetime of the process. That was invisible
+	// when the platform was a CLI restarted every morning; as a long-running
+	// server it would mean the strategy silently stops trading after day one.
+	session string
 }
 
 // leg records what we did with one option symbol.
@@ -72,40 +80,26 @@ func (s *Strategy) Init(ctx context.Context, trader strategy.Trader, cfg config.
 	s.trader = trader
 	s.legs = make(map[string]leg)
 
-	// Defaults.
-	s.indexSymbol = cfg.ParamString("index_symbol")
-	if s.indexSymbol == "" {
-		s.indexSymbol = "NIFTY 50"
+	// Parameters arrive already defaulted, type-coerced, and range-checked by
+	// the registry (see register.go). Applying fallbacks a second time here
+	// would create two sets of defaults that can silently drift apart.
+	//
+	// The registry defaults are still applied defensively for callers that
+	// construct a config by hand, such as tests.
+	params, err := Descriptor().Normalize(cfg.Params)
+	if err != nil {
+		return err
 	}
-	s.underlying = cfg.ParamString("underlying")
-	if s.underlying == "" {
-		s.underlying = "NIFTY"
-	}
-	s.strikeStep = cfg.ParamFloat("strike_step")
-	if s.strikeStep == 0 {
-		s.strikeStep = 50
-	}
-	s.lots = cfg.ParamInt("lots")
-	if s.lots == 0 {
-		s.lots = 1
-	}
-	s.exitDelta = cfg.ParamFloat("exit_delta")
-	if s.exitDelta == 0 {
-		s.exitDelta = 0.25
-	}
-	s.riskFreeRate = cfg.ParamFloat("risk_free_rate")
-	if s.riskFreeRate == 0 {
-		s.riskFreeRate = 0.06
-	}
-	s.squareOffClock = cfg.ParamString("square_off_time")
-	if s.squareOffClock == "" {
-		s.squareOffClock = "15:15"
-	}
-	prod := cfg.ParamString("product")
-	if prod == "" {
-		prod = "MIS"
-	}
-	s.product = broker.ProductType(prod)
+	get := config.StrategyCfg{Params: params}
+
+	s.indexSymbol = get.ParamString("index_symbol")
+	s.underlying = get.ParamString("underlying")
+	s.strikeStep = get.ParamFloat("strike_step")
+	s.lots = get.ParamInt("lots")
+	s.exitDelta = get.ParamFloat("exit_delta")
+	s.riskFreeRate = get.ParamFloat("risk_free_rate")
+	s.squareOffClock = get.ParamString("square_off_time")
+	s.product = broker.ProductType(get.ParamString("product"))
 
 	// Subscribe to the spot index so OnTick drives entry.
 	if err := trader.Subscribe([]string{s.indexSymbol}); err != nil {
@@ -124,6 +118,8 @@ func (s *Strategy) OnTick(ctx context.Context, tick marketdata.Tick) {
 	if tick.TradingSymbol == "" {
 		return
 	}
+	s.rollSession(s.trader.Now())
+
 	// Spot index tick → maybe enter.
 	if tick.TradingSymbol == s.indexSymbol {
 		s.mu.Lock()
@@ -163,9 +159,16 @@ func (s *Strategy) OnFill(ctx context.Context, fill broker.Fill) {
 	}
 }
 
-// Stop squares off any open position on shutdown.
-func (s *Strategy) Stop(ctx context.Context) error {
-	s.squareOff(ctx, "shutdown")
+// Stop releases the strategy. It deliberately does NOT trade: whether an
+// outgoing strategy's positions are squared off is the operator's decision,
+// taken per-stop in the UI, and the engine carries it out via SquareOff.
+func (s *Strategy) Stop(ctx context.Context) error { return nil }
+
+// SquareOff buys back every open leg, satisfying strategy.Flattener. The engine
+// calls this when the operator stops the strategy with square-off requested, or
+// at shutdown.
+func (s *Strategy) SquareOff(ctx context.Context, reason string) error {
+	s.squareOff(ctx, reason)
 	return nil
 }
 
@@ -227,9 +230,45 @@ func (s *Strategy) maybeEnter(ctx context.Context, spot float64) {
 		s.logger.Info("ENTER short straddle", "spot", spot, "strike", atm,
 			"ce", ce.TradingSymbol, "pe", pe.TradingSymbol, "qty", qty)
 	}
+	s.trader.Signal(strategy.Signal{
+		StrategyID: s.name,
+		Kind:       "enter",
+		Message: fmt.Sprintf("Sold %d× straddle at %.0f strike (spot %.2f)",
+			s.lots, atm, spot),
+		Data: map[string]any{
+			"spot": spot, "strike": atm, "qty": qty,
+			"ce": ce.TradingSymbol, "pe": pe.TradingSymbol,
+		},
+	})
 	// Sell both legs at market.
 	s.sell(ctx, ce.TradingSymbol, qty)
 	s.sell(ctx, pe.TradingSymbol, qty)
+}
+
+// rollSession resets the once-per-day entry flags when the IST trading date
+// changes, so the strategy trades again the next morning.
+func (s *Strategy) rollSession(now time.Time) {
+	today := now.In(ist).Format("2006-01-02")
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.session == today {
+		return
+	}
+	// Carrying legs across a rollover would mean losing track of a live
+	// position, so only reset once the book is clear.
+	for _, l := range s.legs {
+		if l.open {
+			return
+		}
+	}
+	if s.session != "" && s.logger != nil {
+		s.logger.Info("new trading session; re-arming", "date", today, "strategy", s.name)
+	}
+	s.session = today
+	s.entered = false
+	s.exited = false
+	s.legs = make(map[string]leg)
 }
 
 // maybeExit squares off if delta drifts past exitDelta or the square-off clock hits.
@@ -246,15 +285,19 @@ func (s *Strategy) maybeExit(ctx context.Context) {
 	spot := s.spot
 	s.mu.Unlock()
 
+	// All time comes from the trader, never time.Now(): in a backtest replaying
+	// past data the real clock would put the square-off window and every greek
+	// on the wrong day.
+	now := s.trader.Now()
+
 	// Time-based square-off.
-	if pastSquareOff(s.squareOffClock) {
+	if pastSquareOff(s.squareOffClock, now) {
 		s.squareOff(ctx, "square-off time")
 		return
 	}
 
 	// Delta-based square-off: compute net delta of the short straddle.
 	netDelta := 0.0
-	now := time.Now()
 	for _, l := range legsCopy {
 		if !l.open {
 			continue
@@ -301,6 +344,15 @@ func (s *Strategy) squareOff(ctx context.Context, reason string) {
 
 	if s.logger != nil {
 		s.logger.Info("EXIT short straddle", "reason", reason, "legs", len(legsCopy))
+	}
+	if s.trader != nil {
+		s.trader.Signal(strategy.Signal{
+			StrategyID: s.name,
+			Kind:       "exit",
+			Level:      "warn",
+			Message:    fmt.Sprintf("Squaring off %d leg(s): %s", len(legsCopy), reason),
+			Data:       map[string]any{"reason": reason, "legs": len(legsCopy)},
+		})
 	}
 	for _, l := range legsCopy {
 		s.buy(ctx, l.symbol, l.qty)
@@ -363,15 +415,20 @@ func roundTo(spot, step float64) float64 {
 	return math.Round(spot/step) * step
 }
 
-// pastSquareOff reports whether the current IST time is past the square-off
-// clock (e.g. "15:15"). Returns false if the clock string is unparseable.
-func pastSquareOff(clock string) bool {
+// ist is the exchange timezone. Declared once rather than rebuilt per call.
+var ist = time.FixedZone("IST", 5*3600+30*60)
+
+// pastSquareOff reports whether `now` is past the square-off clock (e.g.
+// "15:15") in IST. Returns false if the clock string is unparseable.
+//
+// It takes `now` as a parameter rather than reading the clock itself, so the
+// same code is correct under live trading and under a backtest's simulated time.
+func pastSquareOff(clock string, now time.Time) bool {
 	t, err := time.Parse("15:04", clock)
 	if err != nil {
 		return false
 	}
-	ist := time.FixedZone("IST", 5*3600+30*60)
-	now := time.Now().In(ist)
-	target := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, ist)
-	return now.After(target)
+	local := now.In(ist)
+	target := time.Date(local.Year(), local.Month(), local.Day(), t.Hour(), t.Minute(), 0, 0, ist)
+	return local.After(target)
 }

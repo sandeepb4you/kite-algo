@@ -4,11 +4,11 @@ import "context"
 
 // ModifyRequest holds the mutable fields of a pending order.
 type ModifyRequest struct {
-	Quantity      int
-	Price         float64
-	TriggerPrice  float64
-	OrderType     OrderType
-	Validity      Validity
+	Quantity     int
+	Price        float64
+	TriggerPrice float64
+	OrderType    OrderType
+	Validity     Validity
 }
 
 // Broker is the order-execution abstraction. The live and paper brokers both

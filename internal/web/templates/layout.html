@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" defer></script>
   <script src="/static/ws.js" defer></script>
+  <script src="/static/chart.js" defer></script>
 </head>
 <body data-csrf="{{.CSRF}}">
 
@@ -28,12 +29,25 @@
   </div>
 {{end}}
 
+{{/* A halt is global state: it must be visible from every page, not just the
+     one where it was triggered. */}}
+{{if .Status.Halt.Halted}}
+  <div class="modeband modeband-halt">
+    ⛔ TRADING HALTED — {{.Status.Halt.Reason}} · new orders are blocked
+    <a href="/strategies">resume</a>
+  </div>
+{{end}}
+
 <header class="topbar">
   <a class="brand" href="/">kite-algo</a>
   <nav>
     <a href="/" {{if eq .Nav ""}}class="on"{{end}}>Dashboard</a>
     <a href="/trade" {{if eq .Nav "trade"}}class="on"{{end}}>Terminal</a>
+    <a href="/strategies" {{if eq .Nav "strategies"}}class="on"{{end}}>Strategies</a>
     <a href="/market" {{if eq .Nav "market"}}class="on"{{end}}>Market</a>
+    <a href="/research" {{if eq .Nav "research"}}class="on"{{end}}>Research</a>
+    <a href="/backtest" {{if eq .Nav "backtest"}}class="on"{{end}}>Backtest</a>
+    <a href="/risk" {{if eq .Nav "risk"}}class="on"{{end}}>Risk</a>
   </nav>
   <div class="spacer"></div>
   <span id="conn-dot" class="chip chip-warn">connecting</span>
