@@ -67,11 +67,33 @@ func (e *Engine) SquareOff(ctx context.Context, strategyID, symbol string) (*bro
 // and any per-position failures, having attempted all of them: one symbol
 // failing must not leave the rest of the book open.
 func (e *Engine) SquareOffAll(ctx context.Context) ([]*broker.Order, []error) {
+	return e.squareOff(ctx, e.Positions())
+}
+
+// SquareOffBook flattens one book, leaving the other alone.
+//
+// Split from SquareOffAll because the two are different actions with different
+// stakes. Flattening the simulated book costs nothing and should be one click;
+// flattening the real one spends money and must be deliberate. A single control
+// doing both forces the careful treatment onto the harmless case, which is how
+// an operator learns to click through the prompt that matters.
+func (e *Engine) SquareOffBook(ctx context.Context, book broker.Book) ([]*broker.Order, []error) {
+	var want []broker.Position
+	for _, p := range e.Positions() {
+		if p.Book.IsReal() == book.IsReal() {
+			want = append(want, p)
+		}
+	}
+	return e.squareOff(ctx, want)
+}
+
+// squareOff flattens the given positions, shorts first.
+func (e *Engine) squareOff(ctx context.Context, positions []broker.Position) ([]*broker.Order, []error) {
 	var (
 		placed []*broker.Order
 		errs   []error
 	)
-	for _, p := range liquidationOrder(e.Positions()) {
+	for _, p := range liquidationOrder(positions) {
 		o, err := e.flatten(ctx, p)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", p.TradingSymbol, err))

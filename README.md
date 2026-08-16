@@ -617,6 +617,14 @@ would be a password oracle with no lockout.
 Once armed the desk shows a real ticket, **real positions only**, and that
 book's P&L.
 
+**Confirmation prompts follow the money, not the action.** Placing an order
+never prompts, on either desk. Closing a *simulated* position never prompts.
+Closing a *real* position does, and so does flattening the whole real book —
+and those two buttons are split (`Square off REAL (n)` / `Square off paper (n)`)
+precisely so the careful treatment is not forced onto the harmless case. A
+single control doing both is how an operator learns to click through the prompt
+that matters. Each button appears only when that book has something open.
+
 **The order ticket has no confirmation dialog**, on either desk. A discretionary
 trader clicking send has already decided, and a modal between the decision and
 the fill costs time that matters. Note the consequence: double-clicking BUY/SELL

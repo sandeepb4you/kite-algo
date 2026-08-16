@@ -76,13 +76,19 @@
       <td class="r mono {{pnlClass .PnL}}"><b>{{signed .PnL}}</b></td>
       <td class="r">
         {{/* Close this one position. A plain form, so it works without
-             scripting; the confirmation names the instrument and the side,
-             because "are you sure?" on its own tells you nothing when several
-             positions are open. */}}
+             scripting.
+
+             Simulated positions close on one click. Real ones still confirm,
+             and the prompt names the instrument and the side — "are you sure?"
+             on its own tells you nothing when several positions are open, and
+             closing the wrong leg of a spread is worse than not closing at all.
+
+             Branching on the ROW's book rather than the section's, so the rule
+             holds however this table was assembled. */}}
         {{if .IsOpen}}
         <form method="post" action="/api/positions/squareoff"
               data-result="#order-result" class="inline"
-              data-confirm="Square off {{.TradingSymbol}}: {{if lt .NetQuantity 0}}BUY{{else}}SELL{{end}} {{if lt .NetQuantity 0}}{{end}}{{.NetQuantity}} at market?">
+              {{if .Book.IsReal}}data-confirm="REAL position — square off {{.TradingSymbol}}: {{if lt .NetQuantity 0}}BUY{{else}}SELL{{end}} {{.NetQuantity}} at market?"{{end}}>
           <input type="hidden" name="_csrf" value="{{$csrf}}">
           <input type="hidden" name="symbol" value="{{.TradingSymbol}}">
           <input type="hidden" name="strategy" value="{{.StrategyID}}">

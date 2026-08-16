@@ -277,13 +277,31 @@ func (s *Server) handleSquareOff(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(strings.TrimSpace(r.FormValue("symbol")))
 
 	if symbol == "" {
-		placed, errs := s.app.Engine.SquareOffAll(r.Context())
-		s.log.Warn("square off all requested",
+		// An explicit book flattens only that one. Absent, the request means
+		// everything — the older behaviour, kept so any caller that predates
+		// the split still does what it always did.
+		var (
+			placed []*broker.Order
+			errs   []error
+			scope  = "all books"
+		)
+		switch strings.ToLower(strings.TrimSpace(r.FormValue("book"))) {
+		case string(broker.BookReal):
+			scope = "real book"
+			placed, errs = s.app.Engine.SquareOffBook(r.Context(), broker.BookReal)
+		case string(broker.BookPaper):
+			scope = "paper book"
+			placed, errs = s.app.Engine.SquareOffBook(r.Context(), broker.BookPaper)
+		default:
+			placed, errs = s.app.Engine.SquareOffAll(r.Context())
+		}
+		s.log.Warn("square off requested", "scope", scope,
 			"placed", len(placed), "failed", len(errs), "ip", s.clientIP(r))
 
 		switch {
 		case len(placed) == 0 && len(errs) == 0:
-			s.orderResult(w, http.StatusOK, "ok", "Nothing to square off — the book is already flat.")
+			s.orderResult(w, http.StatusOK, "ok",
+				"Nothing to square off — the "+scope+" is already flat.")
 		case len(errs) > 0:
 			// Report partial success explicitly: believing everything closed
 			// when some of it did not is how a position gets carried overnight.
@@ -291,7 +309,7 @@ func (s *Server) handleSquareOff(w http.ResponseWriter, r *http.Request) {
 				"Squared off %d position(s), but %d FAILED: %s", len(placed), len(errs), joinErrs(errs)))
 		default:
 			s.orderResult(w, http.StatusOK, "ok",
-				fmt.Sprintf("Squared off %d position(s).", len(placed)))
+				fmt.Sprintf("Squared off %d position(s) in the %s.", len(placed), scope))
 		}
 		return
 	}

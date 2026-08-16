@@ -447,8 +447,9 @@ func TestPositionsTableKeepsPnLVisible(t *testing.T) {
 	if !strings.Contains(body, `name="symbol" value="NIFTY25AUG24500CE"`) {
 		t.Error("no per-position close button")
 	}
-	if !strings.Contains(body, "data-confirm=") {
-		t.Error("the close button does not confirm; a stray click would send a market order")
+	// A simulated position closes on one click — there is nothing to protect.
+	if strings.Contains(body, "data-confirm=") {
+		t.Error("a paper close still prompts; nothing is at stake there")
 	}
 	// Entry price sits beside LTP: comparing what you paid against what it is
 	// worth is the point of the row.
@@ -641,7 +642,6 @@ func TestLiveDeskIsTheFullTerminal(t *testing.T) {
 		"col-book",      // positions + orders panel
 		"tab-positions", //
 		"tab-orders",    //
-		"Square off everything",
 	} {
 		if !strings.Contains(live, want) {
 			t.Errorf("live desk is missing %q, which the terminal has", want)
@@ -682,5 +682,114 @@ func TestDesksPostAndPollToTheirOwnEndpoints(t *testing.T) {
 	// And the terminal's stay clean.
 	if got := paper.PositionsPollURL(); got != "/partials/positions" {
 		t.Errorf("terminal positions poll = %q, want a bare path", got)
+	}
+}
+
+// Closing a REAL position still confirms, and the prompt names the instrument
+// and side — "are you sure?" alone tells you nothing when several positions are
+// open, and closing the wrong leg of a spread is worse than not closing at all.
+func TestRealPositionCloseStillConfirms(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	render := func(book broker.Book) string {
+		w := httptest.NewRecorder()
+		v := pageView{Status: app.Status{Mode: "live"}, CSRF: "x", Data: dashboardData{
+			Positions: []broker.Position{{
+				StrategyID: "manual", TradingSymbol: "NIFTY25AUG24500CE",
+				Product: broker.ProductMIS, NetQuantity: -75,
+				AveragePrice: 120.5, LastPrice: 100.25, Book: book,
+			}},
+		}}
+		if err := r.Render(w, 200, "positions_fragment.html", v); err != nil {
+			t.Fatal(err)
+		}
+		return w.Body.String()
+	}
+
+	real := render(broker.BookReal)
+	if !strings.Contains(real, "data-confirm=") {
+		t.Error("closing a REAL position does not confirm")
+	}
+	if !strings.Contains(real, "NIFTY25AUG24500CE") || !strings.Contains(real, "BUY") {
+		t.Error("the confirmation does not name the instrument and side")
+	}
+
+	paper := render(broker.BookPaper)
+	if strings.Contains(paper, "data-confirm=") {
+		t.Error("closing a simulated position prompts")
+	}
+}
+
+// The square-off control is split per book: flattening simulated positions
+// costs nothing and is one click, flattening real ones spends money and keeps
+// its prompt. One control doing both forced the careful treatment onto the
+// harmless case, which is how an operator learns to click through the prompt
+// that matters.
+func TestSquareOffButtonsAreSplitPerBook(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pos := func(sym string, book broker.Book) broker.Position {
+		return broker.Position{
+			StrategyID: "manual", TradingSymbol: sym, Product: broker.ProductMIS,
+			NetQuantity: -65, AveragePrice: 100, Book: book,
+		}
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "live", LiveActive: true}, CSRF: "x",
+		Data: tradeData{Positions: []broker.Position{
+			pos("REAL-CE", broker.BookReal),
+			pos("PAPER-CE", broker.BookPaper),
+		}}}
+	if err := r.Render(w, 200, "trade.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	if !strings.Contains(body, `name="book" value="real"`) {
+		t.Error("no real-book square-off button")
+	}
+	if !strings.Contains(body, `name="book" value="paper"`) {
+		t.Error("no paper-book square-off button")
+	}
+	// The paper button must not prompt; the real one must.
+	realIdx := strings.Index(body, `value="real"`)
+	paperIdx := strings.Index(body, `value="paper"`)
+	realForm := body[strings.LastIndex(body[:realIdx], "<form"):realIdx]
+	paperForm := body[strings.LastIndex(body[:paperIdx], "<form"):paperIdx]
+	if !strings.Contains(realForm, "data-confirm=") {
+		t.Error("flattening the REAL book does not confirm")
+	}
+	if strings.Contains(paperForm, "data-confirm=") {
+		t.Error("flattening the paper book prompts; nothing is at stake there")
+	}
+}
+
+// A book with nothing open offers no button at all, rather than one that
+// reports "already flat" after a click.
+func TestSquareOffButtonsHiddenWhenABookIsFlat(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "paper"}, CSRF: "x",
+		Data: tradeData{Positions: []broker.Position{{
+			StrategyID: "s", TradingSymbol: "PAPER-CE", Product: broker.ProductMIS,
+			NetQuantity: -65, Book: broker.BookPaper,
+		}}}}
+	if err := r.Render(w, 200, "trade.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	if strings.Contains(body, `name="book" value="real"`) {
+		t.Error("offered a real square-off with no real positions open")
+	}
+	if !strings.Contains(body, `name="book" value="paper"`) {
+		t.Error("paper square-off missing when paper positions are open")
 	}
 }

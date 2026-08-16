@@ -201,13 +201,43 @@
         {{/* The live desk shows the real book only; the terminal shows both. */}}
         {{if not .Data.Live}}{{template "positions_book" (paperpos .Data.Positions .CSRF)}}{{end}}
       </div>
-      {{/* Outside the polled div: a refresh would otherwise wipe the button. */}}
+      {{/* One button per book, outside the polled div — a refresh would
+           otherwise wipe them.
+
+           Split because the two are different actions with different stakes.
+           Flattening the simulated book costs nothing and is one click;
+           flattening the real one spends money and keeps its prompt. A single
+           control doing both forced the careful treatment onto the harmless
+           case, which is exactly how an operator learns to click through the
+           prompt that matters.
+
+           Each appears only when that book has something to close, so the real
+           button is simply absent on a day with no real positions. */}}
+      {{$real := realpos .Data.Positions .CSRF}}
+      {{$paper := paperpos .Data.Positions .CSRF}}
+
+      {{if $real.Positions}}
       <form method="post" action="/api/positions/squareoff"
-            data-confirm="Square off EVERY open position at market. Continue?"
+            data-confirm="Square off every REAL position at market — this closes real money positions. Continue?"
             data-result="#order-result" class="inline">
         <input type="hidden" name="_csrf" value="{{.CSRF}}">
-        <button class="btn btn-danger btn-sm" type="submit">Square off everything</button>
+        <input type="hidden" name="book" value="real">
+        <button class="btn btn-danger btn-sm" type="submit">
+          Square off REAL ({{len $real.Positions}})
+        </button>
       </form>
+      {{end}}
+
+      {{if $paper.Positions}}
+      <form method="post" action="/api/positions/squareoff"
+            data-result="#order-result" class="inline">
+        <input type="hidden" name="_csrf" value="{{.CSRF}}">
+        <input type="hidden" name="book" value="paper">
+        <button class="btn btn-sm" type="submit">
+          Square off paper ({{len $paper.Positions}})
+        </button>
+      </form>
+      {{end}}
     </div>
 
     <div id="panel-orders" class="tab-panel panel-orders">
