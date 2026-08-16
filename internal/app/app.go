@@ -185,6 +185,8 @@ func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog
 	})
 	a.Kite = NewKiteSession(cfg, store, eng, bus, log)
 
+	a.restorePaperBook(ctx)
+
 	// Best-effort: pick up a token persisted earlier today.
 	if err := a.Kite.Restore(ctx); err != nil && log != nil {
 		log.Warn("restore kite session failed", "err", err)

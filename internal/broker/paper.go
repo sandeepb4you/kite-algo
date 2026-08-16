@@ -264,6 +264,47 @@ func (b *PaperBroker) GetPositions(ctx context.Context) ([]Position, error) {
 	return out, nil
 }
 
+// RestorePositions seeds the book from storage at startup.
+//
+// The paper broker holds its positions in memory, so a restart used to empty
+// them: the rows stayed in the database and simply stopped being displayed,
+// which reads as "my trades vanished" and is indistinguishable from data loss.
+// Nothing called storage.GetOpenPositions at all.
+//
+// Restoring rather than recomputing from fills is deliberate. The stored row
+// already carries the realised P&L the broker accumulated; replaying fills
+// would rebuild it from scratch and risk double-counting a partially closed
+// position.
+//
+// Returns how many were taken on, for the startup log — silence here would make
+// a restore that quietly did nothing look identical to one that worked.
+func (b *PaperBroker) RestorePositions(positions []Position) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	n := 0
+	for _, p := range positions {
+		if p.NetQuantity == 0 {
+			continue
+		}
+		product := p.Product
+		if product == "" {
+			product = ProductNRML
+		}
+		key := positionKey{p.StrategyID, p.TradingSymbol, product}
+		// Never clobber a live position: by the time this runs the engine may
+		// already have traded, and the stored row would be the older truth.
+		if _, exists := b.positions[key]; exists {
+			continue
+		}
+		restored := p
+		restored.Product = product
+		b.positions[key] = &restored
+		n++
+	}
+	return n
+}
+
 // tryFill evaluates one pending order against `price`, filling it if conditions
 // are met. Safe to call repeatedly; it's a no-op once the order is filled.
 func (b *PaperBroker) tryFill(o *Order, price float64) {

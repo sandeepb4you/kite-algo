@@ -86,7 +86,12 @@ type pageView struct {
 	Status app.Status
 	CSRF   string
 	Nav    string
-	Data   any
+	// Session warns when there is no Zerodha session on a trading day. Carried
+	// on every page rather than one: the dashboard redirects to /connect when
+	// disconnected, so a warning there could never appear, and a token that
+	// lapses mid-session leaves the operator on some other page entirely.
+	Session sessionAlert
+	Data    any
 	// Build versions the static asset URLs so a changed stylesheet or script is
 	// never served from a stale cache.
 	Build string
@@ -100,12 +105,13 @@ type pageView struct {
 func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, tmpl, title string, data any) {
 	sess, _ := sessionFrom(r)
 	v := pageView{
-		Title:  title,
-		Status: s.app.Status(),
-		CSRF:   sess.CSRFToken,
-		Nav:    strings.TrimPrefix(r.URL.Path, "/"),
-		Data:   data,
-		Build:  buildID,
+		Title:   title,
+		Status:  s.app.Status(),
+		CSRF:    sess.CSRFToken,
+		Nav:     strings.TrimPrefix(r.URL.Path, "/"),
+		Data:    data,
+		Build:   buildID,
+		Session: s.sessionAlertFor(r),
 	}
 	if err := s.render.Render(w, http.StatusOK, tmpl, v); err != nil {
 		s.log.Error("render failed", "template", tmpl, "err", err)

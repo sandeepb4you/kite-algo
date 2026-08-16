@@ -128,6 +128,7 @@ func (s *Server) routes() http.Handler {
 
 	// Fragments polled by app.js — the correctness baseline behind the socket.
 	mux.Handle("GET /partials/status", page(s.handleStatusFragment))
+	mux.Handle("GET /partials/session-alert", page(s.handleSessionAlertFragment))
 	mux.Handle("GET /partials/account", page(s.handleAccountFragment))
 	mux.Handle("GET /partials/positions", page(s.handlePositionsFragment))
 	mux.Handle("GET /partials/watchlist", page(s.handleWatchlistFragment))

@@ -82,24 +82,11 @@
       form.__wired = true;
 
       form.addEventListener("submit", function (ev) {
+        // The order ticket carries no data-confirm on either desk. What remains
+        // here guards bulk/destructive actions such as "square off everything",
+        // where the cost of a stray click is the whole book rather than one
+        // order.
         var confirmMsg = form.getAttribute("data-confirm");
-
-        // data-confirm-when="field=value" makes the prompt conditional on the
-        // form's own state. The order ticket uses it so only a REAL order asks:
-        // prompting on simulated orders too would train the operator to dismiss
-        // the dialog reflexively, which is precisely the habit you do not want
-        // on the one submission that moves real money.
-        var when = form.getAttribute("data-confirm-when");
-        if (confirmMsg && when) {
-          var eq = when.indexOf("=");
-          var field = eq < 0 ? when : when.slice(0, eq);
-          var want = eq < 0 ? "" : when.slice(eq + 1);
-          var data = new FormData(form);
-          if (String(data.get(field) || "") !== want) {
-            confirmMsg = null;
-          }
-        }
-
         if (confirmMsg && !window.confirm(confirmMsg)) {
           ev.preventDefault();
           return;
@@ -161,9 +148,13 @@
   // A single click only selects the side; a double click selects it and submits
   // the ticket. This goes through requestSubmit() rather than submit() on
   // purpose: requestSubmit fires the form's submit event, so the ticket still
-  // runs HTML validation (no symbol, no order) and still hits the confirm
-  // dialog that live mode attaches. A double click can therefore never bypass
-  // the live-mode confirmation — it only saves reaching for the button.
+  // runs HTML validation (no symbol, no order) and still runs whatever the form
+  // has attached to submit.
+  //
+  // NOTE: the order ticket no longer carries a confirmation dialog, so on the
+  // live desk a double click sends a REAL order immediately. That is the
+  // intended behaviour — speed is the point of the shortcut — but it is the
+  // reason the live desk is a separate page rather than a mode of this one.
   document.addEventListener("dblclick", function (ev) {
     var label = ev.target.closest ? ev.target.closest(".side-toggle label") : null;
     if (!label) return;

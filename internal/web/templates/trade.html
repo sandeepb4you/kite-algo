@@ -78,10 +78,16 @@
     {{/* Which book an order lands in is decided by the ACTION, not by any
          control inside the form. /trade posts to /api/orders and is simulated
          unconditionally; the live desk posts to /api/live/orders. A form value
-         can be mis-set or restored by a browser; an endpoint cannot. */}}
+         can be mis-set or restored by a browser; an endpoint cannot.
+
+         No confirmation dialog, on either desk, by the operator's decision:
+         a discretionary trader clicking send has already decided, and a modal
+         between the decision and the fill costs time that matters. The
+         safeguards that remain are the ones that do not sit in the click path
+         — a separate page for real orders, the arming gate, the per-book risk
+         limits, and the daily-loss lockout. */}}
     <form id="ticket" method="post" action="{{.Data.OrderAction}}" class="ticket"
-          data-result="#order-result"
-          {{if .Data.Live}}data-confirm="REAL ORDER — this sends real money to the exchange. Send it?"{{end}}>
+          data-result="#order-result">
       <input type="hidden" name="_csrf" value="{{.CSRF}}">
 
       <label for="symbol">Instrument</label>

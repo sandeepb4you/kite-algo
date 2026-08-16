@@ -380,8 +380,11 @@ func TestLiveDeskArmedTicketConfirms(t *testing.T) {
 	if !strings.Contains(body, `action="/api/live/orders"`) {
 		t.Error("the armed desk has no real order ticket")
 	}
-	if !strings.Contains(body, "data-confirm=") || !strings.Contains(body, "REAL ORDER") {
-		t.Error("the real ticket does not confirm; a double click would send unchecked")
+	// No confirmation dialog, by the operator's decision — a modal between the
+	// decision and the fill costs time that matters to a discretionary trader.
+	// The ticket must still be unmistakably the real one.
+	if !strings.Contains(body, "PLACE REAL ORDER") {
+		t.Error("the real ticket is not labelled as real")
 	}
 	// Disarming must be present and must not be gated behind a phrase.
 	if !strings.Contains(body, `action="/api/live/disarm"`) {

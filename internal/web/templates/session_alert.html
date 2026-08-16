@@ -1,0 +1,19 @@
+{{/* Missing-session banner.
+
+     Rendered in the sticky chrome so it follows the page down, and polled so it
+     appears the moment a token lapses and clears the moment you reconnect.
+
+     The wording states the CONSEQUENCE, not the condition. "Not connected" is
+     something an operator can look at all morning without acting on; "today's
+     option capture has been missed, permanently" is not. */}}
+{{define "session_alert.html"}}
+{{with .Session}}
+{{if .Show}}
+<div class="modeband {{if .Critical}}modeband-nosession-critical{{else}}modeband-nosession{{end}}">
+  {{if .Critical}}⛔{{else}}⚠{{end}} {{.Headline}}
+  <a href="/connect">connect</a>
+  <span class="nosession-detail">{{.Detail}}</span>
+</div>
+{{end}}
+{{end}}
+{{end}}

@@ -615,7 +615,16 @@ limited through the same `auth.LoginGuard` as the login form; without that it
 would be a password oracle with no lockout.
 
 Once armed the desk shows a real ticket, **real positions only**, and that
-book's P&L. Disarming is one click — no phrase, no password. The asymmetry is
+book's P&L.
+
+**The order ticket has no confirmation dialog**, on either desk. A discretionary
+trader clicking send has already decided, and a modal between the decision and
+the fill costs time that matters. Note the consequence: double-clicking BUY/SELL
+submits the ticket, so on the live desk that sends a real order immediately.
+That is the intended behaviour, and it is the reason real orders live on a
+separate page rather than behind a toggle on this one. Bulk and destructive
+actions — square off everything, halt-and-flatten — still confirm, because there
+the cost of a stray click is the whole book rather than one order. Disarming is one click — no phrase, no password. The asymmetry is
 deliberate: standing down is a de-escalation and must never be harder than
 escalating, or an operator who wants to stop is fighting the interface to do it.
 
@@ -741,6 +750,32 @@ to come from the proxy and the throttle becomes global rather than
 per-attacker. The app reads only the right-most `X-Forwarded-For` entry — the
 one the proxy itself appended — so a client cannot spoof its way to a fresh
 lockout budget.
+
+---
+
+## The paper book survives a restart
+
+Simulated positions are persisted on every fill, but the paper broker holds its
+book in memory — so a restart used to empty it. The rows stayed in the database
+and simply stopped being read back; nothing called `storage.GetOpenPositions` at
+all. From the operator's side that is indistinguishable from data loss: the
+trades were there before lunch and gone after a redeploy.
+
+`App.restorePaperBook` now seeds the broker at startup, with two rules:
+
+- **Only the simulated book.** Real positions come from Zerodha, which is the
+  authority on them. Seeding those from our own last-known state would invent a
+  position the exchange may have closed while the process was down.
+- **Intraday positions expire with their session.** An `MIS` row from a previous
+  day is dropped: the exchange squared it off at the bell, so restoring it would
+  display a position that exists nowhere and let the operator try to close
+  something already gone. `NRML` and `CNC` are meant to survive the close and
+  are restored whatever their age. The count of dropped rows is logged, because
+  a restore that quietly did nothing should not look like one that worked.
+
+A restore never overwrites a position the engine has already taken on — by the
+time it runs, live trading may have started and the stored row is the older
+truth.
 
 ---
 

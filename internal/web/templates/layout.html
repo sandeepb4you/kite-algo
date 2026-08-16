@@ -43,6 +43,12 @@
   </div>
 {{end}}
 
+{{/* No Zerodha session on a trading day. Polled, so it appears when a token
+     lapses mid-session without needing a reload. */}}
+<div data-poll="/partials/session-alert" data-poll-ms="30000">
+  {{template "session_alert.html" .}}
+</div>
+
 {{/* A halt is global state: it must be visible from every page, not just the
      one where it was triggered. */}}
 {{if .Status.Halt.Halted}}
