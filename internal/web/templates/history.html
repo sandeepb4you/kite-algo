@@ -1,0 +1,191 @@
+{{define "history.html"}}
+{{template "head" .}}
+
+<div class="card card-form">
+  <h1>Trade history &amp; performance</h1>
+  <p class="muted small">
+    Realised round trips, paired FIFO from the fills on disk with the same code
+    the backtester uses — so a live week and a backtest are measured the same
+    way. Costs come from the shared rate card, not from the contract note.
+  </p>
+
+  <form method="get" action="/history">
+    <div class="row">
+      <div>
+        <label for="from">From</label>
+        <input id="from" name="from" type="date" value="{{.Data.From}}">
+      </div>
+      <div>
+        <label for="to">To</label>
+        <input id="to" name="to" type="date" value="{{.Data.To}}">
+      </div>
+      <div>
+        <label for="period">Group by</label>
+        <select id="period" name="period">
+          {{$p := .Data.Period}}
+          {{range .Data.Periods}}
+            <option value="{{.}}" {{if eq . $p}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div>
+        <label for="strategy">Strategy</label>
+        <select id="strategy" name="strategy">
+          <option value="">all</option>
+          {{$s := .Data.Strategy}}
+          {{range .Data.Strategies}}
+            <option value="{{.}}" {{if eq . $s}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </div>
+    </div>
+    <button class="btn btn-primary" type="submit">Load</button>
+    {{if .Data.HaveData}}
+      <span class="muted small">Fills on record: {{.Data.SpanFirst}} → {{.Data.SpanLast}}</span>
+    {{end}}
+  </form>
+
+  {{if .Data.Error}}<p class="alert alert-error">{{.Data.Error}}</p>{{end}}
+  {{if .Data.Notice}}<p class="alert alert-warn">{{.Data.Notice}}</p>{{end}}
+</div>
+
+{{if .Data.Trades}}
+<section class="card">
+  <h2>Summary · {{.Data.From}} → {{.Data.To}}</h2>
+  {{with .Data.Summary}}
+  <div class="row">
+    <div class="acct"><span class="acct-label">Net P&amp;L</span>
+      <b class="{{pnlClass .NetPnL}}">{{signed .NetPnL}}</b></div>
+    <div class="acct"><span class="acct-label">Gross</span><b>{{money .GrossPnL}}</b></div>
+    <div class="acct"><span class="acct-label">Costs</span><b>{{money .TotalCosts}}</b></div>
+    <div class="acct"><span class="acct-label">Trades</span><b>{{.TradeCount}}</b></div>
+    <div class="acct"><span class="acct-label">Win rate</span><b>{{num .WinRate}}%</b></div>
+    <div class="acct"><span class="acct-label">Expectancy</span><b>{{money .Expectancy}}</b></div>
+    <div class="acct"><span class="acct-label">Max DD</span><b>{{money .MaxDrawdown}}</b></div>
+  </div>
+  {{end}}
+
+  {{/* An open leg produces no round trip at all, so without this line a
+       strategy still holding a position reads as one that did nothing. */}}
+  {{if .Data.OpenLegs}}
+  <p class="muted small">
+    {{.Data.OpenLegs}} instrument(s) still had an open position at the end of this
+    window. Their P&amp;L is not counted above — only closed round trips are.
+  </p>
+  {{end}}
+</section>
+
+<section class="card">
+  <h2>By {{.Data.Period}}</h2>
+  <div class="scroll-x">
+  <table class="grid-table">
+    <thead>
+      <tr>
+        <th>Period</th>
+        <th class="r">Trades</th>
+        <th class="r">Net P&amp;L</th>
+        <th class="r">Gross</th>
+        <th class="r">Costs</th>
+        <th class="r">Win rate</th>
+        <th class="r">Best day</th>
+        <th class="r">Worst day</th>
+        <th class="r">Max DD</th>
+        <th class="r">Return</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Data.Buckets}}
+      <tr>
+        <td class="mono">{{.Label}}</td>
+        <td class="r mono">{{.Trades}}</td>
+        <td class="r mono {{pnlClass .Metrics.NetPnL}}">{{signed .Metrics.NetPnL}}</td>
+        <td class="r mono">{{money .Metrics.GrossPnL}}</td>
+        <td class="r mono">{{money .Metrics.TotalCosts}}</td>
+        <td class="r mono">{{num .Metrics.WinRate}}%</td>
+        <td class="r mono">{{money .Metrics.BestDay}}</td>
+        <td class="r mono">{{money .Metrics.WorstDay}}</td>
+        <td class="r mono">{{money .Metrics.MaxDrawdown}}</td>
+        <td class="r mono">{{num .Metrics.ReturnPct}}%</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Round trips</h2>
+  <div class="scroll-x">
+  <table class="grid-table">
+    <thead>
+      <tr>
+        <th>#</th><th>Strategy</th><th>Symbol</th><th>Side</th>
+        <th class="r">Qty</th><th>Entry</th><th class="r">In</th>
+        <th>Exit</th><th class="r">Out</th>
+        <th class="r">Gross</th><th class="r">Costs</th><th class="r">Net</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Data.Recent}}
+      <tr>
+        <td class="mono">{{.Seq}}</td>
+        <td class="mono">{{.StrategyID}}</td>
+        <td class="mono">{{.TradingSymbol}}</td>
+        <td class="mono">{{.Direction}}</td>
+        <td class="r mono">{{.Quantity}}</td>
+        <td class="mono">{{ist .EntryTime}}</td>
+        <td class="r mono">{{num .EntryPrice}}</td>
+        <td class="mono">{{ist .ExitTime}}</td>
+        <td class="r mono">{{num .ExitPrice}}</td>
+        <td class="r mono">{{money .GrossPnL}}</td>
+        <td class="r mono">{{money .Costs}}</td>
+        <td class="r mono {{pnlClass .NetPnL}}">{{signed .NetPnL}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted small">Showing {{len .Data.Recent}} of {{len .Data.Trades}} round trips.</p>
+</section>
+{{end}}
+
+{{if .Data.Orders}}
+<section class="card">
+  <h2>Order log</h2>
+  {{/* Rejected and cancelled orders live here and nowhere else. They are what
+       answers "why did nothing happen?", which no round-trip table can. */}}
+  <p class="muted small">
+    Every order in the window, including rejected and cancelled ones.
+  </p>
+  <div class="scroll-x">
+  <table class="grid-table">
+    <thead>
+      <tr>
+        <th>Time</th><th>Strategy</th><th>Symbol</th><th>Side</th>
+        <th class="r">Qty</th><th class="r">Filled</th><th>Type</th>
+        <th>Status</th><th>Reason</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Data.RecentOrders}}
+      <tr>
+        <td class="mono">{{ist .CreatedAt}}</td>
+        <td class="mono">{{.StrategyID}}</td>
+        <td class="mono">{{.TradingSymbol}}</td>
+        <td class="mono">{{.Side}}</td>
+        <td class="r mono">{{.Quantity}}</td>
+        <td class="r mono">{{.FilledQuantity}}</td>
+        <td class="mono">{{.OrderType}}</td>
+        <td class="mono">{{.Status}}</td>
+        <td class="mono muted">{{.RejectReason}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted small">Showing {{len .Data.RecentOrders}} of {{len .Data.Orders}} orders.</p>
+</section>
+{{end}}
+
+{{template "foot" .}}
+{{end}}

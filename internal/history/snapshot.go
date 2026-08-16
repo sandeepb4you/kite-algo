@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"kite-algo/internal/kite"
@@ -131,6 +132,67 @@ func (a *AsOfInstruments) Options(underlying string, minExpiry time.Time) []stor
 	}
 	return out
 }
+
+// Underlyings returns the distinct option underlyings in the snapshot, sorted.
+func (a *AsOfInstruments) Underlyings() []string {
+	seen := make(map[string]struct{})
+	for _, r := range a.rows {
+		if isOption(r) && r.Name != "" {
+			seen[r.Name] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Expiries returns an underlying's option expiries as they stood on the
+// snapshot date, soonest first.
+//
+// Unlike the live master's equivalent, this deliberately does NOT filter out
+// past expiries. The whole reason a snapshot exists is to describe contracts
+// that have since expired, and hiding them here would make exactly the data
+// this platform works hardest to capture invisible.
+func (a *AsOfInstruments) Expiries(underlying string) []time.Time {
+	seen := make(map[string]time.Time)
+	for _, r := range a.rows {
+		if !isOption(r) || r.Name != underlying || r.Expiry.IsZero() {
+			continue
+		}
+		seen[r.Expiry.Format("2006-01-02")] = r.Expiry
+	}
+	out := make([]time.Time, 0, len(seen))
+	for _, t := range seen {
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
+	return out
+}
+
+// Chain returns every contract for one underlying and expiry, sorted by strike
+// then type, as it stood on the snapshot date.
+func (a *AsOfInstruments) Chain(underlying string, expiry time.Time) []storage.InstrumentRow {
+	want := expiry.Format("2006-01-02")
+	var out []storage.InstrumentRow
+	for _, r := range a.rows {
+		if isOption(r) && r.Name == underlying && r.Expiry.Format("2006-01-02") == want {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Strike != out[j].Strike {
+			return out[i].Strike < out[j].Strike
+		}
+		return out[i].InstrumentType < out[j].InstrumentType
+	})
+	return out
+}
+
+// Date reports the day this snapshot describes.
+func (a *AsOfInstruments) Date() time.Time { return a.date }
 
 // Count reports how many instruments the snapshot holds.
 func (a *AsOfInstruments) Count() int { return len(a.rows) }

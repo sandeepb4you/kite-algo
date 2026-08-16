@@ -26,6 +26,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -38,6 +39,7 @@ import (
 	"kite-algo/internal/app"
 	"kite-algo/internal/auth"
 	"kite-algo/internal/config"
+	"kite-algo/internal/history"
 	"kite-algo/internal/logger"
 	"kite-algo/internal/storage/sqlite"
 	"kite-algo/internal/web"
@@ -58,6 +60,9 @@ func run() error {
 		"set the web UI password and exit")
 	dev := flag.Bool("dev", false,
 		"reload templates and static assets from disk on every request")
+	captureDay := flag.String("capture", "",
+		"capture option candles for one day (YYYY-MM-DD, or 'last' for the most "+
+			"recent trading day) and exit; requires a persisted Zerodha session")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -122,6 +127,13 @@ func run() error {
 		return fmt.Errorf("app init: %w", err)
 	}
 
+	// One-shot capture: no web server, no engine, no strategies. Runs the
+	// download and exits, so it can be driven from cron or run by hand after a
+	// missed day — neither of which should have to authenticate to a browser UI.
+	if *captureDay != "" {
+		return runCapture(ctx, application, cfg, *captureDay, log)
+	}
+
 	srv, err := web.New(application, log, web.Options{Dev: *dev})
 	if err != nil {
 		return fmt.Errorf("web init: %w", err)
@@ -159,6 +171,65 @@ func run() error {
 	}
 	log.Info("=== trading platform stopped ===")
 	return runErr
+}
+
+// runCapture performs a single option-candle capture and reports what it stored.
+//
+// A non-trading day is refused rather than quietly skipped: the caller asked for
+// a specific date, and "completed successfully, stored nothing" is precisely the
+// outcome that lets an operator believe a day was captured when it was not.
+func runCapture(ctx context.Context, application *app.App, cfg *config.Config, raw string, log *slog.Logger) error {
+	cal := history.NSE()
+	cal.SetHolidays(cfg.Capture.Holidays)
+
+	var day time.Time
+	if strings.EqualFold(strings.TrimSpace(raw), "last") {
+		d, ok := cal.MostRecentTradingDay(time.Now())
+		if !ok {
+			return fmt.Errorf("no trading day found in the last fortnight")
+		}
+		day = d
+	} else {
+		d, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(raw), history.IST)
+		if err != nil {
+			return fmt.Errorf("-capture wants YYYY-MM-DD or 'last', got %q", raw)
+		}
+		if !cal.IsTradingDay(d) {
+			return fmt.Errorf("%s is a %s — the exchange was shut, nothing to capture",
+				d.Format("2006-01-02"), d.Weekday())
+		}
+		day = d
+	}
+
+	log.Info("capturing option candles", "day", day.Format("2006-01-02"),
+		"interval", cfg.Capture.Interval, "strikes", cfg.Capture.Strikes,
+		"expiries", cfg.Capture.Expiries, "lookback_days", cfg.Capture.LookbackDays)
+
+	rep, err := application.CaptureOnce(ctx, day)
+	if err != nil {
+		return fmt.Errorf("capture %s: %w", day.Format("2006-01-02"), err)
+	}
+	if rep.Skipped != "" {
+		return fmt.Errorf("capture %s skipped: %s", day.Format("2006-01-02"), rep.Skipped)
+	}
+
+	for _, u := range rep.Underlying {
+		if u.Err != "" {
+			log.Warn("chain incomplete", "underlying", u.Underlying, "err", u.Err)
+			continue
+		}
+		log.Info("chain captured", "underlying", u.Underlying, "spot", u.Spot,
+			"expiries", len(u.Expiries), "contracts", u.Contracts,
+			"candles", u.Candles, "failures", u.Failures)
+	}
+	log.Info("capture complete", "day", day.Format("2006-01-02"),
+		"contracts", rep.Contracts, "candles", rep.Candles,
+		"failures", rep.Failures, "took", rep.Duration.Round(time.Second))
+
+	if rep.Contracts == 0 {
+		return fmt.Errorf("capture stored nothing for %s", day.Format("2006-01-02"))
+	}
+	return nil
 }
 
 // setWebPassword prompts for a password and writes its hash to the secrets file.

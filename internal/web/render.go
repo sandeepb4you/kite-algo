@@ -117,8 +117,15 @@ func funcMap() template.FuncMap {
 				return "pnl-flat"
 			}
 		},
-		"num":   func(f float64) string { return fmt.Sprintf("%.2f", f) },
-		"pct":   func(f float64) string { return fmt.Sprintf("%.2f%%", f) },
+		"num": func(f float64) string { return fmt.Sprintf("%.2f", f) },
+		"pct": func(f float64) string { return fmt.Sprintf("%.2f%%", f) },
+		// ivpct renders a volatility given as a FRACTION (0.145) as a percentage
+		// (14.50%). Distinct from pct, which takes a number already in percent —
+		// passing an IV to that one renders 14% vol as "0.15%".
+		"ivpct": func(f float64) string { return fmt.Sprintf("%.2f%%", f*100) },
+		// greek renders delta/gamma at the precision they are actually read at.
+		// %.2f would round every gamma on an index option to 0.00.
+		"greek": func(f float64) string { return fmt.Sprintf("%.4f", f) },
 		"upper": strings.ToUpper,
 		"ist": func(t time.Time) string {
 			if t.IsZero() {

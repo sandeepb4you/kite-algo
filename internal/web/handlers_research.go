@@ -179,19 +179,26 @@ func (s *Server) handleCandlesJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A compact positional shape: a year of minute bars is a lot of JSON, and
-	// field names would triple it for no benefit to a chart.
-	type wire struct {
-		T int64   `json:"t"`
-		O float64 `json:"o"`
-		H float64 `json:"h"`
-		L float64 `json:"l"`
-		C float64 `json:"c"`
-		V int64   `json:"v"`
-	}
-	out := make([]wire, 0, len(candles))
+	writeCandlesJSON(w, candles)
+}
+
+// candleWire is the shape chart.js consumes. Short field names on purpose: a
+// year of minute bars is a lot of JSON, and spelling them out would triple it
+// for no benefit to a chart.
+type candleWire struct {
+	T int64   `json:"t"`
+	O float64 `json:"o"`
+	H float64 `json:"h"`
+	L float64 `json:"l"`
+	C float64 `json:"c"`
+	V int64   `json:"v"`
+}
+
+// writeCandlesJSON renders a candle series for the chart.
+func writeCandlesJSON(w http.ResponseWriter, candles []marketdata.Candle) {
+	out := make([]candleWire, 0, len(candles))
 	for _, c := range candles {
-		out = append(out, wire{
+		out = append(out, candleWire{
 			T: c.OpenTime.UnixMilli(),
 			O: c.Open, H: c.High, L: c.Low, C: c.Close, V: c.Volume,
 		})
@@ -199,7 +206,5 @@ func (s *Server) handleCandlesJSON(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	if err := json.NewEncoder(w).Encode(out); err != nil {
-		s.log.Debug("write candles failed", "err", err)
-	}
+	_ = json.NewEncoder(w).Encode(out)
 }

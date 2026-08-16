@@ -228,6 +228,67 @@ func (c *Client) FetchInstrumentsExchange(ctx context.Context, exchange string) 
 	return ParseInstruments(bytes.NewReader(data))
 }
 
+// FetchInstrumentsExchanges downloads several exchange masters and merges them.
+//
+// NSE and BSE derivatives live in separate CSVs (NFO and BFO), so anything
+// spanning both — SENSEX alongside NIFTY — needs more than one fetch. A failure
+// on any one exchange fails the whole call: a partially-loaded master is worse
+// than none, because the missing contracts look like contracts that do not
+// exist rather than contracts that were not downloaded.
+func (c *Client) FetchInstrumentsExchanges(ctx context.Context, exchanges ...string) (*Instruments, error) {
+	if len(exchanges) == 0 {
+		return nil, fmt.Errorf("kite: no exchanges given")
+	}
+	masters := make([]*Instruments, 0, len(exchanges))
+	for _, ex := range exchanges {
+		m, err := c.FetchInstrumentsExchange(ctx, ex)
+		if err != nil {
+			return nil, fmt.Errorf("load %s instruments: %w", strings.ToUpper(ex), err)
+		}
+		masters = append(masters, m)
+	}
+	return Merge(masters...), nil
+}
+
+// Merge combines instrument masters into one. Later masters win on a symbol
+// collision, which does not arise between exchanges in practice.
+func Merge(masters ...*Instruments) *Instruments {
+	out := &Instruments{
+		bySymbol: make(map[string]*Instrument),
+		byToken:  make(map[uint32]*Instrument),
+	}
+	for _, m := range masters {
+		if m == nil {
+			continue
+		}
+		for sym, inst := range m.bySymbol {
+			out.bySymbol[sym] = inst
+		}
+		for tok, inst := range m.byToken {
+			out.byToken[tok] = inst
+		}
+	}
+	return out
+}
+
+// Exchanges returns the distinct exchanges present in the master, sorted. Used
+// at startup to report what actually loaded, so a missing BFO feed is visible
+// rather than silently narrowing every SENSEX lookup to "not found".
+func (m *Instruments) Exchanges() []string {
+	seen := make(map[string]struct{})
+	for _, inst := range m.bySymbol {
+		if inst.Exchange != "" {
+			seen[inst.Exchange] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for e := range seen {
+		out = append(out, e)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ParseInstruments reads a Kite instrument CSV and builds the lookup index.
 func ParseInstruments(r io.Reader) (*Instruments, error) {
 	cr := csv.NewReader(r)

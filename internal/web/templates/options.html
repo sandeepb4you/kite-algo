@@ -1,0 +1,208 @@
+{{define "options.html"}}
+{{template "head" .}}
+
+<div class="card card-form">
+  <h1>Captured option data</h1>
+  <p class="muted small">
+    Contracts are resolved through the <b>instrument snapshot</b> for the chosen
+    day and read from local storage only — so expired options, which Kite can no
+    longer resolve or sell, still open here. Nothing on this page hits the API.
+  </p>
+
+  <form method="get" action="/options">
+    <div class="row">
+      <div>
+        <label for="date">Trading day</label>
+        <input id="date" name="date" type="date" value="{{.Data.Date}}">
+      </div>
+      <div>
+        <label for="underlying">Underlying</label>
+        <select id="underlying" name="underlying">
+          <option value="">— choose —</option>
+          {{$u := .Data.Underlying}}
+          {{range .Data.Underlyings}}
+            <option value="{{.}}" {{if eq . $u}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div>
+        <label for="expiry">Expiry</label>
+        <select id="expiry" name="expiry" {{if not .Data.Expiries}}disabled{{end}}>
+          <option value="">— choose —</option>
+          {{$e := .Data.Expiry}}
+          {{range .Data.Expiries}}
+            <option value="{{.}}" {{if eq . $e}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div>
+        <label for="strike">Strike</label>
+        <select id="strike" name="strike" {{if not .Data.Strikes}}disabled{{end}}>
+          <option value="">— choose —</option>
+          {{$s := .Data.Strike}}
+          {{range .Data.Strikes}}
+            <option value="{{.Value}}" {{if eq .Value $s}}selected{{end}}>{{.Label}}</option>
+          {{end}}
+        </select>
+      </div>
+      <div>
+        <label for="interval">Interval</label>
+        <select id="interval" name="interval">
+          {{$i := .Data.Interval}}
+          {{range .Data.Intervals}}
+            <option value="{{.}}" {{if eq (printf "%s" .) $i}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" type="submit">Load</button>
+    <p class="muted small">
+      Each choice narrows the next. Pick a day and submit to see which
+      underlyings that snapshot held, then its expiries, then its strikes.
+      {{if .Data.Strikes}}
+        A <b>●</b> marks a strike with captured data —
+        {{.Data.CapturedStrikes}} of {{len .Data.Strikes}} on this day.
+      {{end}}
+    </p>
+  </form>
+
+  {{if .Data.Error}}
+    <p class="alert alert-error">{{.Data.Error}}</p>
+  {{end}}
+  {{if .Data.Warning}}
+    <p class="alert alert-warn">{{.Data.Warning}}</p>
+  {{end}}
+  {{if .Data.SnapshotDate}}
+    <p class="muted small">
+      Resolved against the instrument snapshot of <b>{{.Data.SnapshotDate}}</b>.
+    </p>
+  {{end}}
+</div>
+
+<section class="card">
+  <h2>Capture</h2>
+  {{/* Polls while a run is in flight so the operator can watch it progress;
+       a full pass is minutes of rate-limited requests. */}}
+  <div data-poll="/partials/capture" data-poll-ms="5000">
+    {{template "capture_fragment.html" .Data.Capture}}
+  </div>
+</section>
+
+{{if .Data.Rows}}
+<section class="card">
+  <h2>
+    {{.Data.Underlying}} {{.Data.Strike}} · expiry {{.Data.Expiry}} ·
+    {{.Data.Date}} · {{.Data.Interval}}
+  </h2>
+
+  <div class="row">
+    {{with .Data.Call}}
+    <div>
+      <h3 class="small">Call</h3>
+      <p class="mono small">{{.Symbol}}</p>
+      <p class="muted small">{{len .Candles}} bars · lot {{.LotSize}} · stored {{.Coverage}}</p>
+    </div>
+    {{end}}
+    {{with .Data.Put}}
+    <div>
+      <h3 class="small">Put</h3>
+      <p class="mono small">{{.Symbol}}</p>
+      <p class="muted small">{{len .Candles}} bars · lot {{.LotSize}} · stored {{.Coverage}}</p>
+    </div>
+    {{end}}
+  </div>
+
+  {{if .Data.Call}}
+  <canvas id="chart" height="280"
+          data-candles="/api/option-candles?date={{.Data.Date}}&underlying={{.Data.Underlying}}&expiry={{.Data.Expiry}}&strike={{.Data.Strike}}&interval={{.Data.Interval}}&type=CE"
+          aria-label="Call premium for {{.Data.Underlying}} {{.Data.Strike}}"></canvas>
+  {{end}}
+
+  {{/* Greeks are DERIVED, not captured: Kite's historical feed carries OHLC,
+       volume and open interest and no greek at all. Implied vol is solved from
+       each bar's closing premium against the spot bar of the same timestamp,
+       then the greeks are priced off it with the same Black-Scholes code the
+       live strategy uses. */}}
+  {{if .Data.HasGreeks}}
+  <p class="muted small">
+    Greeks are reconstructed from premium, spot and time to expiry — the feed
+    stores none. Implied vol is solved per bar from the close, so these are the
+    same numbers a backtest computes, not a separately recorded series.
+  </p>
+  {{end}}
+
+  <div class="scroll-x">
+  <table class="grid-table">
+    <thead>
+      <tr>
+        <th>Time (IST)</th>
+        <th class="r">Spot</th>
+        <th class="r">Call</th>
+        <th class="r">Call OI</th>
+        {{if .Data.HasGreeks}}
+          <th class="r">Call IV</th>
+          <th class="r">Call Δ</th>
+          <th class="r">Call Γ</th>
+          <th class="r">Call Θ</th>
+          <th class="r">Call ν</th>
+        {{end}}
+        <th class="r">Put</th>
+        <th class="r">Put OI</th>
+        {{if .Data.HasGreeks}}
+          <th class="r">Put IV</th>
+          <th class="r">Put Δ</th>
+          <th class="r">Put Γ</th>
+          <th class="r">Put Θ</th>
+          <th class="r">Put ν</th>
+          <th class="r" title="Net delta of one SHORT straddle at this strike">Straddle Δ</th>
+        {{end}}
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Data.Recent}}
+      <tr>
+        <td class="mono">{{ist .Time}}</td>
+        <td class="r mono">{{num .Spot}}</td>
+        <td class="r mono">{{num .CallPrice}}</td>
+        <td class="r mono">{{.CallOI}}</td>
+        {{if $.Data.HasGreeks}}
+          {{if .CallOK}}
+            <td class="r mono">{{ivpct .CallIV}}</td>
+            <td class="r mono">{{greek .CallDelta}}</td>
+            <td class="r mono">{{greek .CallGamma}}</td>
+            <td class="r mono">{{num .CallTheta}}</td>
+            <td class="r mono">{{num .CallVega}}</td>
+          {{else}}
+            <td class="r muted" colspan="5">—</td>
+          {{end}}
+        {{end}}
+        <td class="r mono">{{num .PutPrice}}</td>
+        <td class="r mono">{{.PutOI}}</td>
+        {{if $.Data.HasGreeks}}
+          {{if .PutOK}}
+            <td class="r mono">{{ivpct .PutIV}}</td>
+            <td class="r mono">{{greek .PutDelta}}</td>
+            <td class="r mono">{{greek .PutGamma}}</td>
+            <td class="r mono">{{num .PutTheta}}</td>
+            <td class="r mono">{{num .PutVega}}</td>
+          {{else}}
+            <td class="r muted" colspan="5">—</td>
+          {{end}}
+          {{if .StraddleOK}}
+            <td class="r mono">{{greek .StraddleDelta}}</td>
+          {{else}}
+            <td class="r muted">—</td>
+          {{end}}
+        {{end}}
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted small">Showing the last {{len .Data.Recent}} of {{len .Data.Rows}} bars.</p>
+</section>
+{{end}}
+
+{{template "foot" .}}
+{{end}}

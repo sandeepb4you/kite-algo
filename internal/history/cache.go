@@ -33,6 +33,18 @@ func NewCacheProvider(store storage.HistoryStore, upstream Provider, logger *slo
 	}
 }
 
+// SetCalendar replaces the trading calendar used to skip closed windows.
+//
+// The default calendar knows weekends but no holidays, which is safe (a holiday
+// costs one empty request) but wasteful once the operator has actually listed
+// them in config. Capture passes its configured calendar through so the two
+// agree on what a trading day is.
+func (p *CacheProvider) SetCalendar(cal *Calendar) {
+	if cal != nil {
+		p.calendar = cal
+	}
+}
+
 // Name identifies this provider.
 func (p *CacheProvider) Name() string {
 	if p.upstream == nil {
@@ -54,12 +66,27 @@ func (p *CacheProvider) Candles(ctx context.Context, req Request) ([]marketdata.
 
 	gaps := Subtract(storage.TimeRange{From: req.From, To: req.To}, covered)
 
-	// Only ask for windows the exchange was actually open for. A backtest over
-	// a month contains eight or nine non-trading days; requesting them wastes
-	// the rate-limit budget on guaranteed-empty responses.
+	// Skip gaps the exchange was shut for entirely — a weekend-only gap is a
+	// guaranteed-empty response and pure waste of the rate-limit budget.
+	//
+	// But fetch each remaining gap as ONE request spanning its first open to its
+	// last close, rather than one request per trading day. Splitting was the
+	// original behaviour and it multiplies a backfill by the number of days in
+	// it: a 30-day gap became 22 sequential round trips per contract, turning a
+	// few hundred requests into ~14,000 and a twenty-minute job into six hours.
+	// The API already caps a request's span itself (100 days at 5-minute
+	// resolution) and simply returns nothing for the closed hours inside it, so
+	// the per-day split bought nothing the whole-gap skip does not.
 	var toFetch []storage.TimeRange
 	for _, gap := range gaps {
-		toFetch = append(toFetch, p.calendar.TradingWindows(gap)...)
+		windows := p.calendar.TradingWindows(gap)
+		if len(windows) == 0 {
+			continue
+		}
+		toFetch = append(toFetch, storage.TimeRange{
+			From: windows[0].From,
+			To:   windows[len(windows)-1].To,
+		})
 	}
 
 	if len(toFetch) > 0 && p.upstream != nil {

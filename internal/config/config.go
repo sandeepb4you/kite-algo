@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -43,6 +44,7 @@ type Config struct {
 	// "" to disable.
 	SecretsPath string        `yaml:"secrets_path"`
 	Recording   RecordConfig  `yaml:"recording"`
+	Capture     CaptureConfig `yaml:"capture"`
 	Storage     StorageConfig `yaml:"storage"`
 	Risk        RiskConfig    `yaml:"risk"`
 	Web         WebConfig     `yaml:"web"`
@@ -130,6 +132,80 @@ type KiteConfig struct {
 // RecordConfig controls market-data recording.
 type RecordConfig struct {
 	Ticks bool `yaml:"ticks"` // record every tick (large) — off by default
+}
+
+// CaptureConfig controls the daily option-candle capture job.
+//
+// This exists because Kite sells no historical data for expired contracts. A
+// weekly option's candles are purchasable right up to expiry and unobtainable
+// at any price the day after, so the only way to ever backtest against them is
+// to have downloaded them while the contract was alive. The job below is that
+// download, and a day it does not run is a day of option data that is gone.
+type CaptureConfig struct {
+	// Enabled turns the daily job on. Off by default: it spends historical-data
+	// quota, and that should be a deliberate choice.
+	Enabled bool `yaml:"enabled"`
+
+	// RunAt is the daily trigger in IST, "HH:MM". Should sit after the 15:30
+	// close so the final bar of the session is settled.
+	RunAt string `yaml:"run_at"`
+
+	// Interval is the candle interval to capture. "5minute" is the intended
+	// setting; "minute" gives finer data at 5x the rows and the same request
+	// count.
+	Interval string `yaml:"interval"`
+
+	// Strikes is how many strikes to capture on EACH side of the day's traded
+	// range — 20 means roughly 41 strikes per expiry on a quiet day, more when
+	// the underlying travelled.
+	Strikes int `yaml:"strikes"`
+
+	// Expiries is how many expiries deep to go, nearest first.
+	Expiries int `yaml:"expiries"`
+
+	// LookbackDays is how far back to reach the first time a contract is seen.
+	// Coverage tracking means this cost is paid once per contract, not daily —
+	// and it retroactively recovers the history of contracts that are still
+	// alive today, which is the only backfill Kite still permits.
+	LookbackDays int `yaml:"lookback_days"`
+
+	// Underlyings are the option chains to capture.
+	Underlyings []CaptureUnderlying `yaml:"underlyings"`
+
+	// Holidays are exchange holidays as YYYY-MM-DD. Weekends are skipped
+	// structurally; holidays are not derivable and must be listed. An unlisted
+	// holiday costs a few empty requests, never wrong data.
+	Holidays []string `yaml:"holidays"`
+}
+
+// CaptureUnderlying is one option chain to capture.
+type CaptureUnderlying struct {
+	// Name is the underlying as it appears in the instrument master: "NIFTY",
+	// "SENSEX".
+	Name string `yaml:"name"`
+
+	// Index is the spot symbol whose price centres the strike window:
+	// "NIFTY 50", "SENSEX". Must be a known index (see kite.IndexTokens).
+	Index string `yaml:"index"`
+}
+
+// CaptureExchanges returns the instrument-master exchanges the configured
+// underlyings need. NSE derivatives are in NFO, BSE derivatives in BFO, and the
+// two are separate downloads.
+func (c *Config) CaptureExchanges() []string {
+	need := map[string]bool{"NFO": true} // always loaded; the platform trades it
+	for _, u := range c.Capture.Underlyings {
+		switch strings.ToUpper(u.Name) {
+		case "SENSEX", "BANKEX":
+			need["BFO"] = true
+		}
+	}
+	out := make([]string, 0, len(need))
+	for ex := range need {
+		out = append(out, ex)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // StorageConfig controls persistence.
@@ -309,6 +385,36 @@ func (c *Config) applyDefaults() {
 		c.Web.PublicURL = "http://" + c.Web.Addr
 	}
 	c.Web.PublicURL = strings.TrimRight(c.Web.PublicURL, "/")
+
+	// Capture defaults are applied whether or not the job is enabled, so that
+	// turning it on is a one-line change rather than a block of boilerplate the
+	// operator has to get right.
+	if c.Capture.RunAt == "" {
+		c.Capture.RunAt = "15:40"
+	}
+	if c.Capture.Interval == "" {
+		c.Capture.Interval = "5minute"
+	}
+	if c.Capture.Strikes == 0 {
+		c.Capture.Strikes = 20
+	}
+	if c.Capture.Expiries == 0 {
+		c.Capture.Expiries = 4
+	}
+	if c.Capture.LookbackDays == 0 {
+		c.Capture.LookbackDays = 30
+	}
+	if len(c.Capture.Underlyings) == 0 {
+		c.Capture.Underlyings = []CaptureUnderlying{
+			{Name: "NIFTY", Index: "NIFTY 50"},
+			{Name: "SENSEX", Index: "SENSEX"},
+		}
+	}
+	for i := range c.Capture.Underlyings {
+		u := &c.Capture.Underlyings[i]
+		u.Name = strings.ToUpper(strings.TrimSpace(u.Name))
+		u.Index = strings.TrimSpace(u.Index)
+	}
 }
 
 // KiteRedirectURL is the URL Zerodha sends the browser back to after login.

@@ -312,3 +312,67 @@ func TestLoadAsOfBeforeAnySnapshotFails(t *testing.T) {
 		t.Fatal("expected an error for a date before any snapshot")
 	}
 }
+
+// A multi-day gap must cost ONE upstream request, not one per trading day.
+//
+// Splitting per day multiplied every backfill by the number of days in it: a
+// 30-day lookback became 22 sequential round trips per contract, which turned a
+// few-hundred-request capture into ~14,000 and a twenty-minute job into six
+// hours. Kite caps a request's span itself and returns nothing for the closed
+// hours inside it, so the split bought nothing.
+func TestCacheCoalescesAMultiDayGapIntoOneRequest(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	upstream := &countingProvider{name: "fake"}
+	cache := NewCacheProvider(store, upstream, nil)
+
+	// Six weeks spanning many weekends: 6 July → 14 August 2026.
+	_, err := cache.Candles(ctx, Request{
+		Symbol:   "NIFTY2681824350CE",
+		Interval: kite.Interval5Minute,
+		From:     day(2026, time.July, 6),
+		To:       time.Date(2026, 8, 14, 15, 30, 0, 0, IST),
+	})
+	if err != nil {
+		t.Fatalf("Candles: %v", err)
+	}
+
+	if n := len(upstream.requests); n != 1 {
+		t.Fatalf("made %d upstream requests for one contiguous gap, want 1", n)
+	}
+	got := upstream.requests[0]
+	if got.From.Hour() != 9 || got.From.Minute() != 15 {
+		t.Errorf("request starts %s, want a 09:15 session open",
+			got.From.Format("2006-01-02 15:04"))
+	}
+	if got.To.Hour() != 15 || got.To.Minute() != 30 {
+		t.Errorf("request ends %s, want a 15:30 session close",
+			got.To.Format("2006-01-02 15:04"))
+	}
+	// It must still cover the far end of the range, not just the first day.
+	if got.To.Before(time.Date(2026, 8, 14, 0, 0, 0, 0, IST)) {
+		t.Errorf("request ends %s, well short of the requested window", got.To)
+	}
+}
+
+// The optimisation worth keeping: a span the exchange was shut for entirely is
+// never requested, because the response is guaranteed empty.
+func TestCacheSkipsAClosedOnlyGap(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+	upstream := &countingProvider{name: "fake"}
+	cache := NewCacheProvider(store, upstream, nil)
+
+	// Saturday 15 and Sunday 16 August 2026.
+	if _, err := cache.Candles(ctx, Request{
+		Symbol:   "X",
+		Interval: kite.Interval5Minute,
+		From:     day(2026, time.August, 15),
+		To:       day(2026, time.August, 17),
+	}); err != nil {
+		t.Fatalf("Candles: %v", err)
+	}
+	if n := len(upstream.requests); n != 0 {
+		t.Errorf("requested %d windows for a closed weekend, want 0", n)
+	}
+}

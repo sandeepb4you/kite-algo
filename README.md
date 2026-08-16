@@ -315,6 +315,7 @@ See `config.example.yaml` for all options with comments. Key sections:
 | `kite`    | credentials + endpoints (env vars override)                 |
 | `risk`    | `max_daily_loss`, `max_open_positions`, `max_order_value`, `max_lots_per_trade` |
 | `recording.ticks` | record every tick (huge) for backtesting          |
+| `capture`  | daily option-candle capture (see below) — the only way expiring contracts ever become backtestable |
 | `storage.sqlite_path` | DB file location                                  |
 | `strategies` | list of `{name, enabled, params}` for each strategy     |
 
@@ -368,8 +369,12 @@ See `config.example.yaml` for all options with comments. Key sections:
 
 - Realized P&L on **fully-closed** positions in *live* mode isn't reflected in
   the in-memory day-P&L (Kite's `net` positions drop flat rows). Paper mode
-  tracks it correctly. Workaround: persist fills and compute from the `fills`
-  table.
+  tracks it correctly. `/history` computes from the `fills` table and is not
+  affected.
+- Orders do not record their execution price: `orders.price` is the *requested*
+  price, so it is 0 for a market order. Fill prices live only in `fills`. Any
+  history written before fills were persisted correctly is not reconstructible —
+  `positions.average_price` is a per-symbol average, not a per-fill record.
 - No backtesting engine yet (tick/candle *recording* is in place; replay isn't).
 - **Backtests can only cover periods with an instrument snapshot.** Kite drops
   expired contracts from its feed, so a backtest over dates before this server
@@ -460,6 +465,138 @@ simply running the server captures it. `/research` warns when today's snapshot i
 missing. Every day the server runs without one is a day that can never be
 backtested.
 
+### Daily option-candle capture
+
+A snapshot resolves a contract's *symbol*; it does not store its *prices*. Kite
+sells no historical candles for an expired contract either, so the same
+"capture it now or lose it" rule applies to the candles themselves.
+
+`capture` in `config.yaml` downloads them on a timer:
+
+```yaml
+capture:
+  enabled: true
+  run_at: "15:40"      # IST, after the close
+  strikes: 20          # each side of the day's traded range
+  expiries: 4          # nearest first
+  lookback_days: 30
+  underlyings:
+    - {name: "NIFTY",  index: "NIFTY 50"}
+    - {name: "SENSEX", index: "SENSEX"}
+```
+
+Four properties are worth knowing:
+
+- **The strike window follows the day's range, not its close.** A strategy
+  entering at 09:15 uses a different ATM strike than one entering at 15:00, so
+  the window spans low-to-high and widens by `strikes` on each side.
+- **The strike grid is read from the instrument master**, not configured. NIFTY's
+  50-point ladder and SENSEX's 100-point one need no separate settings, and an
+  exchange grid change is absorbed rather than silently mis-captured.
+- **A missed day self-heals for contracts still alive.** Capture writes through
+  the coverage-tracking cache, so a run reaching back `lookback_days` fetches only
+  what is absent. Turning this on today also pulls down the past month of every
+  contract that has not yet expired — the only backfill Kite still permits.
+- **It waits for a session.** If nobody has logged in at 15:40, it retries every
+  minute and captures as soon as the token arrives.
+
+**Triggering it by hand.** The `/options` page carries a capture panel showing
+the schedule, session state and last run, with a *Capture ⟨date⟩ now* button
+(`POST /api/capture/run`). The run happens in the background — a full pass is
+minutes of rate-limited requests — and the panel polls while it goes.
+
+The button targets the **most recent trading day**, not today. Capture skips
+days the exchange was shut, so a "capture today" button pressed on a Sunday
+would report success having stored nothing. An explicitly requested non-trading
+day is rejected for the same reason rather than being snapped to a neighbour.
+
+Headless, for cron or a missed day — no web login involved:
+
+```sh
+trading -capture last          # most recent trading day
+trading -capture 2026-08-14    # a specific one
+```
+
+It runs the download, prints what it stored, and exits non-zero if it stored
+nothing. It still needs a persisted Zerodha session, since the data comes from
+the live API.
+
+SENSEX is on **BSE**, so enabling it makes the platform load the `BFO` instrument
+master alongside `NFO`. Both then appear in the daily snapshot; before this, BSE
+contracts were absent from the master entirely and no amount of capturing could
+have made them backtestable.
+
+Cost at the defaults: ~82 contracts per expiry × 4 expiries × 2 underlyings ≈
+**660 requests/day**, about 4 minutes at Kite's 3/sec historical limit, and
+roughly 50k rows of 5-minute bars.
+
+**Greeks are not captured, because there are none to capture.** Kite's
+historical feed carries OHLC, volume and open interest only. The `/options`
+screen and the backtester both *derive* IV and the greeks from premium, spot and
+time to expiry using `internal/options` — the same code the live strategy calls.
+That is deliberate: a stored greek could drift from the one the strategy
+computes, and then a backtest would be measuring a different position than the
+one it claims to.
+
+### Viewing what was captured — `/options`
+
+`/research` cannot show an expired contract: it resolves symbols through the
+**live** instrument master and falls through to the Kite API, and an expired
+option is absent from one and unsellable by the other. `/options` exists for
+that gap. It resolves through the **instrument snapshot of the day you pick**
+and reads **only from local storage** — no API call, so the data the capture job
+fought to preserve is actually readable.
+
+Pick a day → underlying → expiry → strike; each step is populated from that
+day's snapshot. It shows both legs side by side with premium, open interest,
+derived IV and greeks per bar, plus the net delta of a short straddle at that
+strike — the figure the delta-managed strategy keys its exit off.
+
+**Strikes holding data are marked ●**, with a count ("1 of 105 on this day").
+The dropdown lists the whole chain the exchange offered, so without the marker a
+strike that was never captured is indistinguishable from one that simply did not
+trade. When a selection has no bars the page names which of the three cases it
+is, because they have different fixes:
+
+| Case | What it means |
+|---|---|
+| No strike captured that day | The job did not run. Backfillable *only* while the contracts are still alive. |
+| This strike uncaptured, others fine | It fell outside the ±`strikes` window that day. |
+| No snapshot for the date | Before capture began; the contracts cannot even be resolved. |
+
+---
+
+## Trade history and period performance — `/history`
+
+Realised round trips, paired **FIFO** out of the `fills` table by
+`analytics.BuildTrades` — the same function the backtester uses, so a live week
+and a backtest are measured identically rather than by two implementations that
+can drift.
+
+- **Summary** for the window: net/gross P&L, costs, win rate, expectancy, max drawdown.
+- **By daily / weekly / monthly** — each bucket gets a full `analytics.Metrics`.
+  Buckets are keyed on **exit** time, because that is when P&L is booked; keying
+  on entry would credit an overnight trade to the wrong period and the buckets
+  would stop summing to the total. Weekly uses ISO weeks so keys sort correctly
+  across a year boundary.
+- **Round trips** and the **order log**. The order log is the only place
+  rejected and cancelled orders appear — it is what answers "why did nothing
+  happen?", which no round-trip table can.
+
+The date range defaults to the span of stored fills rather than the last 30
+days, so the page opens on the data instead of on an empty month. Positions
+still open at the end of the window are counted and called out, since they
+produce no round trip and would otherwise make an in-progress strategy look
+inactive.
+
+> **Fills were being silently dropped before this existed.** The paper broker
+> fills synchronously from inside `PlaceOrder`, so the fill callback ran before
+> the engine had saved the order — and `fills.order_id` is a foreign key. Every
+> insert failed the constraint, the error was logged and swallowed, and one
+> database accumulated 34 `COMPLETE` orders against 0 fill rows. `handleFill`
+> now upserts the parent order first. See
+> `TestFillsPersistWhenBrokerFillsSynchronously`.
+
 ---
 
 ## Database migrations
@@ -505,7 +642,8 @@ a few seconds stale rather than wrong.
 - Parameter sweeps (the `ParamSpec` min/max metadata is already the right shape)
 - Fill-based realized P&L reconciliation for live mode
 - Multi-leg order types (spread entry as one unit)
-- Exchange holiday calendar
+- Exchange holiday calendar (`capture.holidays` is a manual stopgap)
+- Capture a date *range* in one action, for catching up after a long outage
 
 ---
 

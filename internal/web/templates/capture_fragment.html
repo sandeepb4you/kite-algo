@@ -1,0 +1,74 @@
+{{define "capture_fragment.html"}}
+{{if not .Enabled}}
+  <p class="muted small">
+    Daily capture is <b>disabled</b>. Expired-contract data cannot be recovered
+    later — set <code>capture.enabled: true</code> in config.yaml.
+  </p>
+{{else}}
+  <div class="row">
+    <div>
+      <span class="muted small">Scheduled</span>
+      <p class="mono small">{{.RunAt}} IST daily · {{.Interval}}</p>
+    </div>
+    <div>
+      <span class="muted small">Session</span>
+      <p class="mono small">
+        {{if .Ready}}connected{{else}}<b>not connected</b> — capture cannot run{{end}}
+      </p>
+    </div>
+    <div>
+      <span class="muted small">Last run</span>
+      <p class="mono small">
+        {{if .Status.Running}}
+          running now…
+        {{else if .Status.LastRunAt.IsZero}}
+          never
+        {{else}}
+          {{ist .Status.LastRunAt}}
+        {{end}}
+      </p>
+    </div>
+  </div>
+
+  {{if .Status.Running}}
+    <p class="alert alert-warn">
+      A capture is running. Requests are rate-limited to 3/sec, so a full pass
+      takes a few minutes.
+    </p>
+  {{end}}
+
+  {{if .Status.Error}}
+    <p class="alert alert-error">
+      Last capture failed: {{.Status.Error}}
+    </p>
+  {{else if not .Status.LastRunAt.IsZero}}
+    <p class="muted small">
+      {{if .Status.Skipped}}
+        Skipped: {{.Status.Skipped}}.
+      {{else}}
+        {{.Status.Contracts}} contracts · {{.Status.Candles}} bars stored
+        {{if .Status.Failures}}· <b>{{.Status.Failures}} failed</b>{{end}}
+      {{end}}
+    </p>
+  {{end}}
+
+  {{/* The target is the most recent TRADING day. Defaulting to "today" would
+       make the button a no-op every weekend — capture skips days the exchange
+       was shut, and it would report success having done nothing. */}}
+  <form method="post" action="/api/capture/run" data-result="#capture-result">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <input type="hidden" name="date" value="{{.Target}}">
+    <button class="btn" type="submit" {{if or .Status.Running (not .Ready)}}disabled{{end}}>
+      Capture {{.Target}} now
+    </button>
+    <span class="muted small">
+      {{if not .IsToday}}
+        Most recent trading day — today is not one.
+      {{end}}
+      Backfills each contract's history to the lookback horizon; already-stored
+      bars are skipped.
+    </span>
+  </form>
+  <div id="capture-result"></div>
+{{end}}
+{{end}}

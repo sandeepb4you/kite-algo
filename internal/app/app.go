@@ -22,6 +22,7 @@ import (
 	"kite-algo/internal/config"
 	"kite-algo/internal/engine"
 	"kite-algo/internal/events"
+	"kite-algo/internal/history"
 	"kite-algo/internal/risk"
 	"kite-algo/internal/storage"
 	"kite-algo/internal/strategy"
@@ -51,6 +52,9 @@ type App struct {
 
 	// margins caches the account balance fetched from Zerodha.
 	margins marginCache
+
+	// capture is the daily option-candle job, nil when disabled in config.
+	capture *history.CaptureScheduler
 
 	mu       sync.RWMutex
 	liveMode bool // true once the live broker has been swapped in
@@ -152,6 +156,7 @@ func (a *App) Run(ctx context.Context) error {
 	go a.Sessions.GC(ctx, time.Hour)
 	go a.guardSweep(ctx)
 	go a.marginLoop(ctx)
+	a.startCapture(ctx)
 	return a.Engine.Start(ctx)
 }
 

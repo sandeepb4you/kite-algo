@@ -18,6 +18,10 @@ package kite
 //
 // Every token must be in the indices segment: Kite encodes the segment in the
 // low byte, and indices are 9. TestIndexTokens enforces that.
+// BSE indices are here too. SENSEX options trade on BFO, and capturing them
+// needs the spot quote to locate the at-the-money strike — without an entry
+// here the capture job cannot centre its strike window and skips the underlying
+// entirely.
 var IndexTokens = map[string]uint32{
 	"NIFTY 50":          256265,
 	"NIFTY BANK":        260105,
@@ -25,6 +29,28 @@ var IndexTokens = map[string]uint32{
 	"NIFTY MID SELECT":  288009,
 	"NIFTY NEXT 50":     270857,
 	"INDIA VIX":         264969,
+	"SENSEX":            265,
+	"BANKEX":            274441,
+}
+
+// IndexExchange maps an index to the exchange its quote is published on, which
+// is what /quote/ltp keys need ("NSE:NIFTY 50", "BSE:SENSEX"). Indices are not
+// in any instrument CSV, so the exchange cannot be looked up like a contract's.
+var IndexExchange = map[string]string{
+	"NIFTY 50":          "NSE",
+	"NIFTY BANK":        "NSE",
+	"NIFTY FIN SERVICE": "NSE",
+	"NIFTY MID SELECT":  "NSE",
+	"NIFTY NEXT 50":     "NSE",
+	"INDIA VIX":         "NSE",
+	"SENSEX":            "BSE",
+	"BANKEX":            "BSE",
+}
+
+// IndexExchangeFor returns the exchange an index quote is published on.
+func IndexExchangeFor(name string) (string, bool) {
+	ex, ok := IndexExchange[name]
+	return ex, ok
 }
 
 // indexSymbols is the reverse lookup, built once at start-up.

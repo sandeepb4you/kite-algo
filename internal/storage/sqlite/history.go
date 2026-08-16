@@ -51,6 +51,30 @@ func (s *Store) GetCandles(ctx context.Context, symbol, interval string, from, t
 	return out, rows.Err()
 }
 
+// CapturedSymbols lists the symbols holding candles in [from, to), sorted.
+func (s *Store) CapturedSymbols(ctx context.Context, interval string, from, to time.Time) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT trading_symbol
+		FROM candles
+		WHERE interval = ? AND open_time >= ? AND open_time < ?
+		ORDER BY trading_symbol`,
+		interval, from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("query captured symbols: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var sym string
+		if err := rows.Scan(&sym); err != nil {
+			return nil, fmt.Errorf("scan captured symbol: %w", err)
+		}
+		out = append(out, sym)
+	}
+	return out, rows.Err()
+}
+
 // SaveCandles writes candles in a single transaction with a prepared statement.
 func (s *Store) SaveCandles(ctx context.Context, candles []marketdata.Candle) error {
 	if len(candles) == 0 {

@@ -69,6 +69,23 @@ func (c *Calendar) SessionFor(t time.Time) (storage.TimeRange, bool) {
 	return storage.TimeRange{From: open, To: close}, true
 }
 
+// MostRecentTradingDay returns the latest trading day at or before t.
+//
+// A manual "capture now" pressed on a Sunday must not target Sunday: capture
+// skips non-trading days, so the button would appear to work and do nothing.
+// The day the operator means is the last one that traded. Bounded to a fortnight
+// so an unbroken run of configured holidays cannot loop forever.
+func (c *Calendar) MostRecentTradingDay(t time.Time) (time.Time, bool) {
+	day := t.In(IST)
+	for i := 0; i < 14; i++ {
+		if c.IsTradingDay(day) {
+			return day, true
+		}
+		day = day.AddDate(0, 0, -1)
+	}
+	return time.Time{}, false
+}
+
 // TradingWindows splits a range into the portions the exchange was open for.
 func (c *Calendar) TradingWindows(r storage.TimeRange) []storage.TimeRange {
 	var out []storage.TimeRange

@@ -15,6 +15,13 @@
 </head>
 <body data-csrf="{{.CSRF}}">
 
+{{/* Everything in .chrome follows the page down as it scrolls.
+     The nav is in here because a trader halfway down a positions table should
+     be one click from anywhere, not a scroll-to-top away. The mode band is in
+     here for a stronger reason: whether fills are simulated or real must be
+     readable at every scroll position, not only at the top of the document. */}}
+<div class="chrome">
+
 {{/* The mode band is the single most important piece of chrome on the page:
      it must be impossible to mistake simulated trading for real trading. */}}
 {{if .Status.LiveActive}}
@@ -49,6 +56,8 @@
     <a href="/strategies" {{if eq .Nav "strategies"}}class="on"{{end}}>Strategies</a>
     <a href="/market" {{if eq .Nav "market"}}class="on"{{end}}>Market</a>
     <a href="/research" {{if eq .Nav "research"}}class="on"{{end}}>Research</a>
+    <a href="/options" {{if eq .Nav "options"}}class="on"{{end}}>Options</a>
+    <a href="/history" {{if eq .Nav "history"}}class="on"{{end}}>History</a>
     <a href="/backtest" {{if eq .Nav "backtest"}}class="on"{{end}}>Backtest</a>
     <a href="/risk" {{if eq .Nav "risk"}}class="on"{{end}}>Risk</a>
   </nav>
@@ -67,6 +76,8 @@
     <button class="btn btn-quiet" type="submit">Sign out</button>
   </form>
 </header>
+
+</div>{{/* .chrome */}}
 
 <div id="toasts" class="toasts"></div>
 

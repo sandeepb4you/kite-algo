@@ -986,7 +986,28 @@ func (e *Engine) markPositionsToMarket(force bool) {
 
 // handleFill records a fill and routes it to the owning strategy.
 func (e *Engine) handleFill(fill broker.Fill) {
-	if err := e.store.SaveFill(context.Background(), &fill); err != nil && e.logger != nil {
+	ctx := context.Background()
+
+	// Persist the parent order before the fill.
+	//
+	// The paper broker fills synchronously from inside PlaceOrder, so this runs
+	// BEFORE PlaceOrder has returned and before the engine has saved the order.
+	// fills.order_id is a foreign key, so inserting the fill first violated the
+	// constraint, the error was logged and swallowed, and every paper fill was
+	// silently discarded — 34 completed orders had produced 0 fill rows. Nothing
+	// downstream noticed, because positions are written separately.
+	//
+	// SaveOrder is an upsert, so the write PlaceOrder does moments later simply
+	// updates the same row. Live fills arrive long after their order was saved
+	// and take the cheap not-found path.
+	if pb := e.currentPaperBroker(); pb != nil {
+		if o, ok := pb.GetOrder(fill.OrderID); ok {
+			if err := e.store.SaveOrder(ctx, &o); err != nil && e.logger != nil {
+				e.logger.Error("persist order before fill failed", "id", o.ID, "err", err)
+			}
+		}
+	}
+	if err := e.store.SaveFill(ctx, &fill); err != nil && e.logger != nil {
 		e.logger.Error("persist fill failed", "id", fill.ID, "err", err)
 	}
 	// Persist the affected position (paper broker already updated it).

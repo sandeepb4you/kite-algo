@@ -225,6 +225,21 @@ func (b *PaperBroker) CancelOrder(ctx context.Context, orderID string) error {
 	return nil
 }
 
+// GetOrder returns a copy of an order by id, filled or not.
+//
+// Needed because this broker fills synchronously from inside PlaceOrder, so a
+// fill reaches the engine before the engine holds the order it belongs to. The
+// engine uses this to persist the parent row first — see Engine.handleFill.
+func (b *PaperBroker) GetOrder(id string) (Order, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	o, ok := b.orders[id]
+	if !ok {
+		return Order{}, false
+	}
+	return *o, true
+}
+
 // GetOpenOrders returns pending orders.
 func (b *PaperBroker) GetOpenOrders(ctx context.Context) ([]Order, error) {
 	b.mu.Lock()

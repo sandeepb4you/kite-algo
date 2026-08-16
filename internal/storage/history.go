@@ -64,6 +64,12 @@ type HistoryStore interface {
 	// no historical subscription is available.
 	GetTicks(ctx context.Context, symbol string, from, to time.Time) ([]marketdata.Tick, error)
 
+	// CapturedSymbols lists the symbols holding candles in a window, so the UI
+	// can say WHICH contracts were captured instead of only reporting that the
+	// one asked for was not. Answering that by probing each strike in turn would
+	// be hundreds of queries per page load.
+	CapturedSymbols(ctx context.Context, interval string, from, to time.Time) ([]string, error)
+
 	// SaveInstrumentSnapshot records the instrument master for one day.
 	SaveInstrumentSnapshot(ctx context.Context, asOf time.Time, rows []InstrumentRow) error
 

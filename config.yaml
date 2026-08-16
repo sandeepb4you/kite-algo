@@ -43,6 +43,30 @@ live_confirm: false
 recording:
   ticks: false
 
+# Daily option-candle capture.
+#
+# Kite sells no historical data for EXPIRED contracts: candles are keyed by
+# instrument_token, and an expired option's token leaves the instrument master
+# for good. A weekly option's data is buyable up to expiry and gone forever the
+# day after. This job downloads it while the contracts are still alive — a day
+# it does not run is a day of option data nobody can ever backtest.
+capture:
+  enabled: true
+  run_at: "15:40"          # IST, after the 15:30 close so the last bar is settled
+  interval: "5minute"
+  strikes: 20              # strikes captured EACH SIDE of the day's traded range
+  expiries: 4              # how many expiries deep, nearest first
+  lookback_days: 30        # first sighting of a contract reaches back this far;
+                           # coverage means it is paid once, not daily
+  underlyings:
+    - name: "NIFTY"        # as it appears in the instrument master (NFO)
+      index: "NIFTY 50"    # spot symbol that centres the strike window
+    - name: "SENSEX"       # BSE — requires the BFO master, loaded automatically
+      index: "SENSEX"
+  # Weekends are skipped structurally. Holidays are not derivable — list them
+  # or the job spends a few empty requests on each one.
+  holidays: []
+
 # SQLite database location. Directory is created if missing.
 storage:
   sqlite_path: "./data/trading.db"

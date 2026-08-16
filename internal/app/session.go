@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -251,12 +252,25 @@ func (s *KiteSession) Activate(ctx context.Context, token string, persist bool) 
 		return err
 	}
 
-	instruments, err := client.FetchInstrumentsExchange(ctx, "NFO")
+	// NSE and BSE derivatives are separate downloads. Loading NFO alone — which
+	// is all this did originally — makes every SENSEX and BANKEX contract look
+	// like a contract that does not exist, and silently omits them from the
+	// instrument snapshot, so BSE option data can never be backtested however
+	// diligently it is captured. Which exchanges are needed follows from the
+	// configured capture chains.
+	exchanges := s.cfg.CaptureExchanges()
+	instruments, err := client.FetchInstrumentsExchanges(ctx, exchanges...)
 	if err != nil {
 		s.fail(fmt.Errorf("load instruments: %w", err))
 		return err
 	}
 	client.LogInstrumentsSummary(instruments)
+	if s.logger != nil {
+		s.logger.Info("instrument master loaded",
+			"exchanges", strings.Join(instruments.Exchanges(), ","),
+			"requested", strings.Join(exchanges, ","),
+			"instruments", instruments.Len())
+	}
 
 	now := time.Now()
 	expires := TokenExpiry(now)
