@@ -34,13 +34,24 @@ Then, in the provider's **cloud firewall**, allow only:
 **Port 80 is not needed and should stay closed.** There is no ACME challenge to
 serve — the certificate comes from Caddy's own CA, see step 5.
 
-Then bootstrap it, as root — pick the script for your distro:
+Then bootstrap it, as root.
+
+A minimal cloud image ships neither git nor Docker, so fetch the script
+directly rather than cloning first — the script is what installs git:
 
 ```sh
-./bootstrap-rocky.sh <your-browsing-ip>   # Rocky / Alma / RHEL 9
-./bootstrap.sh       <your-browsing-ip>   # Ubuntu / Debian
-# find your IP with:  curl -s https://api.ipify.org
+# Rocky / Alma / RHEL 9
+curl -fsSL https://raw.githubusercontent.com/sandeepb4you/kite-algo/master/deploy/bootstrap-rocky.sh -o bootstrap.sh
+
+# Ubuntu / Debian
+curl -fsSL https://raw.githubusercontent.com/sandeepb4you/kite-algo/master/deploy/bootstrap.sh -o bootstrap.sh
+
+chmod +x bootstrap.sh
+./bootstrap.sh "$(curl -s https://api.ipify.org)"     # or pass your IP explicitly
 ```
+
+(If you already have git, cloning first and running the script from
+`deploy/` works exactly the same.)
 
 Both install Docker and set up a host firewall as a second layer behind the
 cloud firewall — the provider's console is somewhere nobody looks for months,
