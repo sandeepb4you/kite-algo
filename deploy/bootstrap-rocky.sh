@@ -79,12 +79,26 @@ NOTHING IS RUNNING YET. Next, on this server:
        ./trust-cert.sh
 
   6. BEFORE relying on it, copy your existing database over — a fresh volume
-     starts empty, and the captured option candles cannot be re-downloaded:
-       # on your workstation, with the local app STOPPED:
-       scp data/trading.db root@<this-server>:/tmp/trading.db
-       # here:
-       docker compose down            # note: NO -v, that would delete the volume
-       docker compose cp /tmp/trading.db app:/data/trading.db
+     starts empty, and the captured option candles cannot be re-downloaded.
+
+     On your workstation, with the local app STOPPED (a live SQLite file whose
+     WAL you did not also copy is a torn database that reads fine at first):
+       gzip -c data/trading.db | ssh root@<this-server> 'gunzip -c > /tmp/trading.db'
+
+     Here — write straight into the named volume. Do NOT use
+     'docker compose down' + 'docker compose cp': down removes the container,
+     leaving nothing to copy into. This works whether or not it exists:
+       cd $APP_DIR/deploy
+       docker volume ls | grep kite-data      # confirm the name below
+
+       docker compose stop app 2>/dev/null || true
+       docker run --rm -v deploy_kite-data:/data -v /tmp:/src:ro alpine \\
+         sh -c 'cp /src/trading.db /data/trading.db \\
+                && chown 10001:10001 /data/trading.db && ls -l /data'
        docker compose up -d
+
+     The chown is required, not tidiness: the app runs as UID 10001 and a
+     root-owned file makes every write fail with "attempt to write a readonly
+     database" — which sounds like a mount problem and is not one.
 
 EOF
