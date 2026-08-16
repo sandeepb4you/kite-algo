@@ -40,22 +40,27 @@ A minimal cloud image ships neither git nor Docker, so fetch the script
 directly rather than cloning first — the script is what installs git:
 
 ```sh
-# Rocky / Alma / RHEL 9
+# Rocky / Alma / RHEL 9 — no host firewall, takes no argument
 curl -fsSL https://raw.githubusercontent.com/sandeepb4you/kite-algo/master/deploy/bootstrap-rocky.sh -o bootstrap.sh
+chmod +x bootstrap.sh
+./bootstrap.sh
 
-# Ubuntu / Debian
+# Ubuntu / Debian — sets up ufw, so it needs the IP you browse from
 curl -fsSL https://raw.githubusercontent.com/sandeepb4you/kite-algo/master/deploy/bootstrap.sh -o bootstrap.sh
-
 chmod +x bootstrap.sh
 ./bootstrap.sh "$(curl -s https://api.ipify.org)"     # or pass your IP explicitly
 ```
 
+The two paths differ on purpose. The RHEL script configures **no host firewall**:
+firewalld does not filter Docker-published ports through its zones anyway, and on
+some cloud images it fails to load its own config outright. The cloud firewall
+and Caddy's `ALLOWED_IPS` allowlist carry access control there instead.
+
 (If you already have git, cloning first and running the script from
 `deploy/` works exactly the same.)
 
-Both install Docker and set up a host firewall as a second layer behind the
-cloud firewall — the provider's console is somewhere nobody looks for months,
-while the host firewall is in front of you on every login.
+Both install Docker. The Ubuntu script also sets up ufw as a second layer behind
+the cloud firewall; the RHEL one does not, for the reasons below.
 
 > **Two RHEL-family details the Ubuntu path does not have.**
 >
@@ -65,13 +70,17 @@ while the host firewall is in front of you on every login.
 > SELinux off would trade a real protection for five minutes of convenience on
 > a box holding broker credentials.
 >
-> **firewalld does not filter Docker-published ports.** Published ports are
-> DNAT'd through FORWARD, while firewalld zones act on INPUT — so
-> `firewall-cmd --add-port` leaves a container port open to the world while the
-> firewall looks configured. The script puts the 443 rule in the `DOCKER-USER`
-> chain instead, which Docker consults first and which survives reboots and
-> Docker restarts. SSH is an ordinary host service and is handled by the zone
-> as normal.
+> **No host firewall, so the cloud firewall is load-bearing.** firewalld was
+> not worth keeping here: its zones act on INPUT while Docker's published ports
+> are DNAT'd through FORWARD, so a `firewall-cmd --add-port` rule leaves a
+> container port open to the world while the firewall looks configured. Working
+> around that needs a `DOCKER-USER` direct rule, and on some cloud images
+> firewalld refuses to apply any permanent config at all (`RUNNING_BUT_FAILED`).
+>
+> What replaces it: the provider's cloud firewall, and Caddy's `ALLOWED_IPS`
+> allowlist, which answers 404 to every address not on it. **Check the cloud
+> firewall by hand** — nothing on the box will catch a mistake there, and port
+> 22 in particular now has no second layer in front of it.
 
 ## 1. Prepare the files
 

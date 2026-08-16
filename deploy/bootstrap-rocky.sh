@@ -2,27 +2,28 @@
 #
 # Provision a fresh Rocky Linux 9 server (Utho or any RHEL-family host).
 #
-# Idempotent: safe to re-run. Installs Docker, configures firewalld, and leaves
-# SELinux enforcing. It deliberately does NOT start anything — config and
-# secrets have to be filled in by hand first, and a half-configured trading
-# process starting on boot is not something to automate.
+# Idempotent: safe to re-run. Installs Docker and leaves SELinux enforcing. It
+# deliberately does NOT start anything — config and secrets have to be filled in
+# by hand first, and a half-configured trading process starting on boot is not
+# something to automate.
+#
+# NO HOST FIREWALL is configured here. Access control lives in two other places,
+# and both have to be right:
+#
+#   - the provider's cloud firewall — 22/tcp and 443/tcp from your IP, nothing
+#     else. This is now the only thing standing in front of SSH.
+#   - ALLOWED_IPS in deploy/.env — Caddy answers 404 to any other address, so
+#     the trading UI stays closed even if 443 is reachable from the internet.
 #
 # Usage, as root on the server:
-#   ./bootstrap-rocky.sh <your-browsing-ip>
+#   ./bootstrap-rocky.sh
 #
 set -euo pipefail
-
-ALLOW_IP="${1:-}"
-if [[ -z "$ALLOW_IP" ]]; then
-	echo "usage: $0 <your-browsing-ip>    # the address you will reach the UI from" >&2
-	echo "  find it with:  curl -s https://api.ipify.org" >&2
-	exit 1
-fi
 
 APP_DIR=/opt/kite-algo
 
 echo "==> Packages"
-dnf -y -q install dnf-plugins-core curl git firewalld policycoreutils-python-utils
+dnf -y -q install dnf-plugins-core curl git policycoreutils-python-utils
 
 echo "==> Docker"
 if ! command -v docker >/dev/null 2>&1; then
@@ -42,39 +43,17 @@ echo "==> SELinux"
 getenforce || true
 setsebool -P container_manage_cgroup on 2>/dev/null || true
 
-echo "==> firewalld"
-systemctl enable --now firewalld
-
-# SSH: an ordinary host service, so firewalld's zone rules do apply.
-firewall-cmd --permanent --zone=public --remove-service=ssh >/dev/null 2>&1 || true
-firewall-cmd --permanent --zone=public --remove-service=cockpit >/dev/null 2>&1 || true
-firewall-cmd --permanent --zone=public --add-rich-rule="rule family=ipv4 source address=$ALLOW_IP service name=ssh accept" >/dev/null
-
-# HTTPS is a DOCKER-PUBLISHED port, and that is a different problem.
-#
-# Docker's published ports are DNAT'd and traverse the FORWARD chain, while
-# firewalld's zone rules act on INPUT. So a `firewall-cmd --add-port` rule does
-# NOT filter a container's published port — the port stays open to the world and
-# the firewall looks like it is configured. The chain Docker leaves for exactly
-# this is DOCKER-USER, consulted before its own rules; a firewalld direct rule
-# there is persistent across reboots and Docker restarts.
-firewall-cmd --permanent --direct --add-rule ipv4 filter DOCKER-USER 0 \
-	-p tcp --dport 443 '!' -s "$ALLOW_IP" -j DROP >/dev/null
-firewall-cmd --reload
-
 echo "==> Application directory"
 mkdir -p "$APP_DIR"
 chmod 750 "$APP_DIR"
 
-echo
-echo "==> firewalld state"
-firewall-cmd --list-all --zone=public | sed 's/^/    /'
-echo "    DOCKER-USER direct rules:"
-firewall-cmd --direct --get-all-rules | sed 's/^/      /'
-
 cat <<EOF
 
-==> Done. Docker installed, SELinux enforcing, firewalld allowing only $ALLOW_IP.
+==> Done. Docker installed, SELinux enforcing, no host firewall by design.
+
+    Access control is entirely the cloud firewall's job now. Confirm in the
+    provider console that 22/tcp and 443/tcp are open to your address ONLY —
+    with no host firewall there is no second layer to catch a mistake there.
 
 NOTHING IS RUNNING YET. Next, on this server:
 
