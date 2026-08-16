@@ -54,7 +54,7 @@ func Descriptor() strategy.Descriptor {
 			{
 				Key: "exit_delta", Label: "Exit at |net delta|", Kind: strategy.KindFloat,
 				Default: 0.25, Min: strategy.Ptr(0.01), Max: strategy.Ptr(2), Group: "Exit",
-				Description: "Square off once the position's net delta drifts past this.",
+				Description: "Square off once the position's net delta drifts past this. Measured per unit, so the trigger does not move when you change lots.",
 			},
 			{
 				Key: "square_off_time", Label: "Square off by (IST)", Kind: strategy.KindTime,

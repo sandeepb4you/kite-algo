@@ -13,7 +13,7 @@
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
 
     <label for="strategy">Strategy</label>
-    <select id="strategy" name="strategy" required>
+    <select id="strategy" name="strategy" data-params-url="/partials/backtest-params" required>
       <option value="">Choose…</option>
       {{$sel := .Data.StrategyType}}
       {{range .Data.Available}}
@@ -51,10 +51,6 @@
 
     <div class="row">
       <div>
-        <label for="lots">Lots</label>
-        <input id="lots" name="lots" type="number" min="1" step="1" value="{{.Data.Lots}}">
-      </div>
-      <div>
         <label for="capital">Capital (₹)</label>
         <input id="capital" name="capital" type="number" min="1" step="1000" value="{{.Data.Capital}}">
       </div>
@@ -73,6 +69,10 @@
       the adverse extreme came first — when the data cannot say, a backtest
       should not assume the lucky ordering.
     </p>
+
+    <div id="strategy-params">
+      {{template "backtest_params_body" .Data.Params}}
+    </div>
 
     <button class="btn btn-primary" type="submit">Run backtest</button>
   </form>

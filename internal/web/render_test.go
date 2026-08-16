@@ -26,6 +26,21 @@ import (
 //
 // Passing each partial the data it needs — rather than the enclosing view —
 // removes the coupling; this test makes sure it stays removed.
+// sampleDescriptor exercises every ParamKind the form partial can render.
+var sampleDescriptor = strategy.Descriptor{
+	Type: "short-straddle", Title: "Short straddle",
+	Params: []strategy.ParamSpec{
+		{Key: "lots", Label: "Lots", Kind: strategy.KindInt, Default: 1,
+			Min: strategy.Ptr(1), Max: strategy.Ptr(50)},
+		{Key: "product", Label: "Product", Kind: strategy.KindEnum,
+			Options: []string{"MIS", "NRML"}, Default: "MIS"},
+		{Key: "square_off_time", Label: "Square off", Kind: strategy.KindTime, Default: "15:15"},
+		{Key: "exit_delta", Label: "Exit delta", Kind: strategy.KindFloat, Default: 0.25},
+		{Key: "underlying", Label: "Underlying", Kind: strategy.KindString, Default: "NIFTY"},
+		{Key: "hedged", Label: "Buy a hedge", Kind: strategy.KindBool, Default: false},
+	},
+}
+
 func TestEveryTemplateRenders(t *testing.T) {
 	r, err := NewRenderer(false)
 	if err != nil {
@@ -63,16 +78,9 @@ func TestEveryTemplateRenders(t *testing.T) {
 			Running:   []engine.StrategyStatus{{InstanceID: "s1", State: engine.StateRunning, Positions: positions}},
 			Available: []strategy.Descriptor{{Type: "short-straddle", Title: "Short straddle"}},
 		}},
-		{"strategy_new.html", strategy.Descriptor{
+		{"strategy_new.html", strategyFormData{
 			Type: "short-straddle", Title: "Short straddle",
-			Params: []strategy.ParamSpec{
-				{Key: "lots", Label: "Lots", Kind: strategy.KindInt, Default: 1},
-				{Key: "product", Label: "Product", Kind: strategy.KindEnum,
-					Options: []string{"MIS", "NRML"}, Default: "MIS"},
-				{Key: "square_off_time", Label: "Square off", Kind: strategy.KindTime, Default: "15:15"},
-				{Key: "exit_delta", Label: "Exit delta", Kind: strategy.KindFloat, Default: 0.25},
-				{Key: "underlying", Label: "Underlying", Kind: strategy.KindString, Default: "NIFTY"},
-			},
+			Params: paramFields(sampleDescriptor, nil, false),
 		}},
 		{"risk.html", riskData{
 			Limits:     risk.Limits{MaxDailyLoss: 7500, MaxOrderValue: 200000, MaxLotsPerTrade: 2, MaxOpenPositions: 8},
@@ -88,8 +96,12 @@ func TestEveryTemplateRenders(t *testing.T) {
 			Intervals: kite.Intervals,
 			Paths:     []backtest.BarPath{backtest.PathPessimist},
 			Interval:  "5minute", From: "2024-08-01", To: "2024-08-02",
-			Capital: "100000", Lots: "1",
+			Capital: "100000",
+			Params:  paramFields(sampleDescriptor, nil, false),
 		}},
+		// The unchosen-strategy state: the form renders before any strategy is
+		// selected, so the parameter block must survive an empty field list.
+		{"backtest_params.html", []paramField(nil)},
 		{"chain_fragment.html", tradeData{Chain: engine.OptionChain{
 			Underlying: "NIFTY", SpotSymbol: "NIFTY 50", Spot: 24512.35,
 			Expiry:      time.Now().AddDate(0, 0, 3),

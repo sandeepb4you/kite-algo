@@ -1,0 +1,39 @@
+{{/* Form controls for a strategy's declared parameters.
+
+     Takes a []paramField — the spec plus the value to show. Every field is
+     generated from the descriptor's ParamSpec list, so adding a strategy, or a
+     parameter to one, needs no template change and no new validation code.
+
+     Shared by the strategy start form and the backtest form: two places that
+     must agree about what a parameter looks like, or a backtest would be
+     configured differently from the live run it is meant to predict. */}}
+{{define "param_fields"}}
+  {{range .}}
+    {{$s := .Spec}}
+    <label for="{{$s.Key}}">{{$s.Label}}</label>
+    {{if eq (printf "%s" $s.Kind) "enum"}}
+      {{$v := .Value}}
+      <select id="{{$s.Key}}" name="{{$s.Key}}">
+        {{range $s.Options}}
+          <option value="{{.}}" {{if eq . $v}}selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+    {{else if eq (printf "%s" $s.Kind) "bool"}}
+      <input id="{{$s.Key}}" name="{{$s.Key}}" type="checkbox" value="true"
+             {{if .Checked}}checked{{end}}>
+    {{else if eq (printf "%s" $s.Kind) "time"}}
+      <input id="{{$s.Key}}" name="{{$s.Key}}" type="time" value="{{.Value}}">
+    {{else if eq (printf "%s" $s.Kind) "int"}}
+      <input id="{{$s.Key}}" name="{{$s.Key}}" type="number" step="1"
+             value="{{.Value}}"
+             {{if $s.Min}}min="{{$s.Min}}"{{end}} {{if $s.Max}}max="{{$s.Max}}"{{end}}>
+    {{else if eq (printf "%s" $s.Kind) "float"}}
+      <input id="{{$s.Key}}" name="{{$s.Key}}" type="number" step="any"
+             value="{{.Value}}"
+             {{if $s.Min}}min="{{$s.Min}}"{{end}} {{if $s.Max}}max="{{$s.Max}}"{{end}}>
+    {{else}}
+      <input id="{{$s.Key}}" name="{{$s.Key}}" type="text" value="{{.Value}}">
+    {{end}}
+    {{if $s.Description}}<p class="muted small">{{$s.Description}}</p>{{end}}
+  {{end}}
+{{end}}

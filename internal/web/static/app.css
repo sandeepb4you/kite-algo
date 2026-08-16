@@ -523,6 +523,25 @@ input[type="date"], input[type="time"], select {
 input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 form .btn-primary { width: 100%; margin-top: 16px; }
 
+/* Strategy parameters on the backtest form. Grouped in a fieldset because they
+   are a distinct block that swaps out wholesale when the strategy changes; the
+   border makes that boundary visible rather than leaving the fields looking
+   like more of the run settings above them. */
+.params {
+  margin: 18px 0 0;
+  padding: 4px 14px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+.params legend {
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 code {
   font-family: var(--mono);
   font-size: 13px;

@@ -5,9 +5,6 @@
   <h1>{{.Data.Title}}</h1>
   <p class="muted">{{.Data.Summary}}</p>
 
-  {{/* Every field below is generated from the strategy's declared ParamSpec
-       list. Adding a strategy, or a parameter to one, needs no template change
-       and no new validation code. */}}
   <form method="post" action="/api/strategies" data-result="#action-result">
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
     <input type="hidden" name="type" value="{{.Data.Type}}">
@@ -20,33 +17,7 @@
       run more than one copy with different settings.
     </p>
 
-    {{range .Data.Params}}
-      <label for="{{.Key}}">{{.Label}}</label>
-      {{if eq (printf "%s" .Kind) "enum"}}
-        <select id="{{.Key}}" name="{{.Key}}">
-          {{$def := printf "%v" .Default}}
-          {{range .Options}}
-            <option value="{{.}}" {{if eq . $def}}selected{{end}}>{{.}}</option>
-          {{end}}
-        </select>
-      {{else if eq (printf "%s" .Kind) "bool"}}
-        <input id="{{.Key}}" name="{{.Key}}" type="checkbox" value="true"
-               {{if .Default}}checked{{end}}>
-      {{else if eq (printf "%s" .Kind) "time"}}
-        <input id="{{.Key}}" name="{{.Key}}" type="time" value="{{.Default}}">
-      {{else if eq (printf "%s" .Kind) "int"}}
-        <input id="{{.Key}}" name="{{.Key}}" type="number" step="1"
-               value="{{.Default}}"
-               {{if .Min}}min="{{.Min}}"{{end}} {{if .Max}}max="{{.Max}}"{{end}}>
-      {{else if eq (printf "%s" .Kind) "float"}}
-        <input id="{{.Key}}" name="{{.Key}}" type="number" step="any"
-               value="{{.Default}}"
-               {{if .Min}}min="{{.Min}}"{{end}} {{if .Max}}max="{{.Max}}"{{end}}>
-      {{else}}
-        <input id="{{.Key}}" name="{{.Key}}" type="text" value="{{.Default}}">
-      {{end}}
-      {{if .Description}}<p class="muted small">{{.Description}}</p>{{end}}
-    {{end}}
+    {{template "param_fields" .Data.Params}}
 
     <button class="btn btn-primary" type="submit">Start strategy</button>
   </form>

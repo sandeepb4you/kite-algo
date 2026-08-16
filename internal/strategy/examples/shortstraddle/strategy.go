@@ -49,6 +49,12 @@ type Strategy struct {
 	legs    map[string]leg // symbol -> leg metadata
 	spot    float64        // last underlying spot
 
+	// baseQty is the quantity of one leg at entry (lots × lot size). Net delta is
+	// summed quantity-weighted and then divided by this, so exit_delta stays the
+	// per-unit number the descriptor declares (range 0.01–2) and the exit trigger
+	// does not move when the operator changes `lots`.
+	baseQty int
+
 	// session is the IST trading date the entered/exited flags belong to.
 	// Without it those flags are set once and never cleared, so the strategy
 	// trades exactly once for the lifetime of the process. That was invisible
@@ -120,27 +126,34 @@ func (s *Strategy) OnTick(ctx context.Context, tick marketdata.Tick) {
 	}
 	s.rollSession(s.trader.Now())
 
-	// Spot index tick → maybe enter.
+	// Spot index tick → refresh spot, maybe enter.
 	if tick.TradingSymbol == s.indexSymbol {
 		s.mu.Lock()
 		s.spot = tick.LastPrice
 		s.mu.Unlock()
 		s.maybeEnter(ctx, tick.LastPrice)
-		return
 	}
-	// Option tick → manage an open position.
-	s.mu.Lock()
-	hasOpen := false
-	for _, l := range s.legs {
-		if l.open {
-			hasOpen = true
-			break
-		}
-	}
-	s.mu.Unlock()
-	if hasOpen {
+
+	// Every tick — spot included — manages an open position. Keying exit
+	// management off option ticks alone meant an illiquid leg that stopped
+	// printing could hold the position past both the delta limit and the
+	// square-off clock, precisely when the underlying was moving fastest. The
+	// index prints continuously, so it is the reliable heartbeat.
+	if s.hasOpenLeg() {
 		s.maybeExit(ctx)
 	}
+}
+
+// hasOpenLeg reports whether any leg is still short.
+func (s *Strategy) hasOpenLeg() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, l := range s.legs {
+		if l.open {
+			return true
+		}
+	}
+	return false
 }
 
 // OnFill logs fills so you can watch the strategy trade.
@@ -173,7 +186,8 @@ func (s *Strategy) SquareOff(ctx context.Context, reason string) error {
 }
 
 // maybeEnter opens the short straddle once, at the ATM strike for the nearest
-// expiry, using MARKET sell orders for both legs.
+// expiry, using MARKET sell orders for both legs. It does nothing once the
+// square-off clock has passed.
 func (s *Strategy) maybeEnter(ctx context.Context, spot float64) {
 	s.mu.Lock()
 	if s.entered || s.exited || spot <= 0 || s.trader == nil {
@@ -181,6 +195,14 @@ func (s *Strategy) maybeEnter(ctx context.Context, spot float64) {
 		return
 	}
 	s.mu.Unlock()
+
+	// Never open a position the exit path would close on this very tick. A first
+	// tick arriving after the square-off clock — a late start, a reconnect, a
+	// backtest whose window opens mid-afternoon — would otherwise sell the
+	// straddle and buy it straight back, paying both spreads for no exposure.
+	if pastSquareOff(s.squareOffClock, s.trader.Now()) {
+		return
+	}
 
 	chain := s.trader.Options(s.underlying, time.Time{})
 	if len(chain) == 0 {
@@ -222,6 +244,7 @@ func (s *Strategy) maybeEnter(ctx context.Context, spot float64) {
 		return
 	}
 	s.entered = true
+	s.baseQty = qty
 	s.legs[ce.TradingSymbol] = leg{symbol: ce.TradingSymbol, side: broker.SideSell, strike: atm, typ: options.Call, qty: qty, open: true}
 	s.legs[pe.TradingSymbol] = leg{symbol: pe.TradingSymbol, side: broker.SideSell, strike: atm, typ: options.Put, qty: qty, open: true}
 	s.mu.Unlock()
@@ -268,6 +291,7 @@ func (s *Strategy) rollSession(now time.Time) {
 	s.session = today
 	s.entered = false
 	s.exited = false
+	s.baseQty = 0
 	s.legs = make(map[string]leg)
 }
 
@@ -283,6 +307,7 @@ func (s *Strategy) maybeExit(ctx context.Context) {
 		legsCopy[k] = v
 	}
 	spot := s.spot
+	baseQty := s.baseQty
 	s.mu.Unlock()
 
 	// All time comes from the trader, never time.Now(): in a backtest replaying
@@ -296,34 +321,68 @@ func (s *Strategy) maybeExit(ctx context.Context) {
 		return
 	}
 
-	// Delta-based square-off: compute net delta of the short straddle.
+	// Delta-based square-off: compute the net delta of the short straddle,
+	// weighted by each leg's quantity. Summing raw per-unit deltas only happens
+	// to be right while every leg is the same size; weighting by qty keeps the
+	// number a true position delta once the legs diverge (a partial cover, or a
+	// leg closed on its own).
 	netDelta := 0.0
+	openQty := 0
 	for _, l := range legsCopy {
 		if !l.open {
 			continue
 		}
 		ins, ok := s.trader.Lookup(l.symbol)
 		if !ok {
-			continue
+			return // see below: a partial sum is worse than no sum
 		}
 		premium := s.trader.LTP(l.symbol)
 		if premium <= 0 {
-			continue
+			return
 		}
 		t := options.YearsToExpiry(now, ins.Expiry)
 		iv, err := options.ImpliedVol(premium, spot, l.strike, t, s.riskFreeRate, l.typ)
 		if err != nil {
-			continue
+			return
 		}
 		g := options.BlackScholes(spot, l.strike, t, iv, s.riskFreeRate, l.typ)
 		// We are SHORT the option, so the position delta is the negative of the
 		// option's delta.
-		netDelta += -g.Delta
+		netDelta += -g.Delta * float64(l.qty)
+		openQty += l.qty
 	}
+	// Any leg we could not price aborts the check rather than contributing zero.
+	// Half a straddle looks like a runaway delta — an unquoted put would have
+	// squared the position off on the call's delta alone.
+	if openQty == 0 {
+		return
+	}
+
+	// Normalize back to per-unit, so exit_delta means the same thing at 1 lot and
+	// at 10 and stays inside the 0.01–2 range the descriptor validates against.
+	if baseQty <= 0 {
+		baseQty = maxLegQty(legsCopy) // legs restored without an entry this session
+	}
+	if baseQty <= 0 {
+		return
+	}
+	netDelta /= float64(baseQty)
 
 	if math.Abs(netDelta) > s.exitDelta {
 		s.squareOff(ctx, "delta limit")
 	}
+}
+
+// maxLegQty returns the largest open-leg quantity, the fallback denominator when
+// the entry quantity is unknown.
+func maxLegQty(legs map[string]leg) int {
+	most := 0
+	for _, l := range legs {
+		if l.open && l.qty > most {
+			most = l.qty
+		}
+	}
+	return most
 }
 
 // squareOff buys back every open leg (once).

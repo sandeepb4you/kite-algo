@@ -125,6 +125,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /partials/orders", page(s.handleOrdersFragment))
 	mux.Handle("GET /partials/strategies", page(s.handleStrategiesFragment))
 	mux.Handle("GET /partials/chain", page(s.handleChainFragment))
+	mux.Handle("GET /partials/backtest-params", page(s.handleBacktestParamsFragment))
 
 	return chain(mux, s.recoverPanic, s.accessLog, s.secureHeaders)
 }

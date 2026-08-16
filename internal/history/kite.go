@@ -66,6 +66,14 @@ func (p *KiteProvider) Candles(ctx context.Context, req Request) ([]marketdata.C
 // unresolvable here by construction — that is what the instrument snapshots
 // exist for.
 func (p *KiteProvider) resolve(symbol string) (uint32, error) {
+	// Index spot symbols ("NIFTY 50") are in no exchange CSV, so the instrument
+	// master will never hold them; their tokens are hard-coded (see
+	// kite/indices.go) and the ticker already subscribes through that table.
+	// Without this, every index-driven backtest loaded zero candles and reported
+	// a clean run of no trades — the strategy simply never saw a spot price.
+	if token, ok := kite.IndexTokenFor(symbol); ok {
+		return token, nil
+	}
 	if p.instruments == nil {
 		return 0, fmt.Errorf("history: no instrument master loaded; log in first")
 	}

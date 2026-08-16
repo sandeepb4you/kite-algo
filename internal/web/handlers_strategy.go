@@ -36,6 +36,14 @@ func (s *Server) handleStrategiesFragment(w http.ResponseWriter, r *http.Request
 	s.renderFragment(w, r, "strategies_fragment.html", s.strategyData())
 }
 
+// strategyFormData drives the strategy start form.
+type strategyFormData struct {
+	Type    string
+	Title   string
+	Summary string
+	Params  []paramField
+}
+
 // handleNewStrategy renders the configuration form for one strategy type.
 //
 // The form is generated entirely from the descriptor's ParamSpec list, so
@@ -48,7 +56,12 @@ func (s *Server) handleNewStrategy(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("No strategy type named %q is registered.", typ))
 		return
 	}
-	s.renderPage(w, r, "strategy_new.html", "Configure "+desc.Title, desc)
+	s.renderPage(w, r, "strategy_new.html", "Configure "+desc.Title, strategyFormData{
+		Type:    desc.Type,
+		Title:   desc.Title,
+		Summary: desc.Summary,
+		Params:  paramFields(desc, nil, false),
+	})
 }
 
 // handleStartStrategy validates the submitted parameters and starts an instance.
@@ -65,17 +78,7 @@ func (s *Server) handleStartStrategy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Collect only declared parameters from the form; Normalize rejects
-	// anything unrecognized so a renamed field cannot silently fall back to a
-	// default the operator believes they overrode.
-	raw := make(map[string]any, len(desc.Params))
-	for _, p := range desc.Params {
-		if v := r.FormValue(p.Key); v != "" {
-			raw[p.Key] = v
-		} else if p.Kind == strategy.KindBool {
-			raw[p.Key] = "false" // an unticked checkbox posts nothing
-		}
-	}
+	raw := collectParams(desc, r.Form)
 
 	instanceID := strings.TrimSpace(r.FormValue("instance_id"))
 	if instanceID == "" {
@@ -88,18 +91,8 @@ func (s *Server) handleStartStrategy(w http.ResponseWriter, r *http.Request) {
 		Params:     raw,
 	})
 	if err != nil {
-		var ve *strategy.ValidationError
-		if errors.As(err, &ve) {
-			// Name every bad field at once so the operator fixes them in one pass.
-			var b strings.Builder
-			b.WriteString("Check these settings: ")
-			for i, f := range ve.Fields {
-				if i > 0 {
-					b.WriteString("; ")
-				}
-				fmt.Fprintf(&b, "%s %s", f.Key, f.Message)
-			}
-			s.actionResult(w, http.StatusOK, "error", b.String())
+		if msg, ok := paramProblems(err); ok {
+			s.actionResult(w, http.StatusOK, "error", msg)
 			return
 		}
 		s.actionResult(w, http.StatusOK, "error", "Could not start: "+err.Error())

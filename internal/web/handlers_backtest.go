@@ -29,7 +29,11 @@ type backtestData struct {
 	To           string
 	BarPath      string
 	Capital      string
-	Lots         string
+
+	// Params are the chosen strategy's declared parameters, rendered as form
+	// fields. Empty until a strategy is chosen — a strategy's parameters are
+	// not knowable before then.
+	Params []paramField
 
 	Result *backtest.Result
 	Error  string
@@ -50,7 +54,6 @@ func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 		To:           r.FormValue("to"),
 		BarPath:      r.FormValue("bar_path"),
 		Capital:      r.FormValue("capital"),
-		Lots:         r.FormValue("lots"),
 	}
 	if d.Interval == "" {
 		d.Interval = string(kite.Interval5Minute)
@@ -67,8 +70,11 @@ func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 	if d.Capital == "" {
 		d.Capital = "100000"
 	}
-	if d.Lots == "" {
-		d.Lots = "1"
+	// Echo the parameters back on a POST so a run rejected for any reason —
+	// bad dates, missing data, an out-of-range parameter — returns the form the
+	// operator submitted rather than one silently reset to the defaults.
+	if desc, ok := strategy.Default.Get(d.StrategyType); ok {
+		d.Params = paramFields(desc, r.Form, r.Method == http.MethodPost)
 	}
 
 	if r.Method == http.MethodPost {
@@ -81,6 +87,19 @@ func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderPage(w, r, "backtest.html", "Backtest", d)
+}
+
+// handleBacktestParamsFragment renders the parameter fields for one strategy.
+//
+// app.js swaps this in when the strategy select changes. An unknown or empty
+// type renders the prompt rather than an error: the fragment is a convenience,
+// and the page it enhances still works without it.
+func (s *Server) handleBacktestParamsFragment(w http.ResponseWriter, r *http.Request) {
+	var fields []paramField
+	if desc, ok := strategy.Default.Get(r.URL.Query().Get("strategy")); ok {
+		fields = paramFields(desc, nil, false)
+	}
+	s.renderFragment(w, r, "backtest_params.html", fields)
 }
 
 // runBacktest validates the form and executes the run.
@@ -96,6 +115,22 @@ func (s *Server) runBacktest(r *http.Request, d *backtestData) (*backtest.Result
 	desc, ok := strategy.Default.Get(d.StrategyType)
 	if !ok {
 		return nil, fmt.Errorf("unknown strategy %q", d.StrategyType)
+	}
+
+	// Strategy parameters come from the form, defaulted and range-checked by the
+	// descriptor — the same path the live start form takes, so a backtest cannot
+	// be configured in a way the live instance would reject.
+	//
+	// Checked before the data plumbing on purpose: a mistyped parameter is the
+	// operator's to fix either way, and reporting it should not depend on
+	// whether a history provider happens to be connected. Normalizing here
+	// rather than leaving it to the runner is what names the offending fields.
+	params, err := desc.Normalize(collectParams(desc, r.Form))
+	if err != nil {
+		if msg, ok := paramProblems(err); ok {
+			return nil, fmt.Errorf("%s", msg)
+		}
+		return nil, err
 	}
 
 	interval, ok := kite.ParseInterval(d.Interval)
@@ -130,11 +165,6 @@ func (s *Server) runBacktest(r *http.Request, d *backtestData) (*backtest.Result
 	if err != nil || capital <= 0 {
 		return nil, fmt.Errorf("capital must be a positive number")
 	}
-	lots, err := strconv.Atoi(d.Lots)
-	if err != nil || lots <= 0 {
-		return nil, fmt.Errorf("lots must be a positive whole number")
-	}
-
 	store, ok := s.app.Store.(storage.HistoryStore)
 	if !ok {
 		return nil, fmt.Errorf("this storage backend cannot serve historical data")
@@ -142,14 +172,6 @@ func (s *Server) runBacktest(r *http.Request, d *backtestData) (*backtest.Result
 	provider, _ := s.historyProvider()
 	if provider == nil {
 		return nil, fmt.Errorf("no historical data provider available")
-	}
-
-	// Strategy parameters come from the descriptor's defaults, with lots
-	// overridden. A full parameter form per strategy is the obvious next step;
-	// defaults keep the first version usable without one.
-	params := desc.Defaults()
-	if _, declared := params["lots"]; declared {
-		params["lots"] = lots
 	}
 
 	cfg := backtest.Config{

@@ -47,6 +47,7 @@
   function start() {
     wireForms(document);
     wireSearch();
+    wireStrategyParams();
 
     document.querySelectorAll("[data-poll]").forEach(function (el) {
       swap(el);
@@ -257,6 +258,39 @@
           })
           .catch(function () { /* typeahead is optional */ });
       }, 200);
+    });
+  }
+
+  // --- backtest strategy parameters ---------------------------------------
+  //
+  // Which parameters exist depends on the strategy, so the fields cannot be
+  // part of the static form. Changing the select fetches that strategy's
+  // fields and swaps them in.
+  //
+  // Without scripting the page still works: the server renders the fields for
+  // whichever strategy is selected on every response, so the no-JS path is
+  // choose → Run → adjust → Run. That is why the fetch failing silently is
+  // acceptable here — the next submit brings the right fields back.
+  function wireStrategyParams() {
+    var select = document.getElementById("strategy");
+    var box = document.getElementById("strategy-params");
+    if (!select || !box || !select.getAttribute("data-params-url")) return;
+
+    select.addEventListener("change", function () {
+      var url = select.getAttribute("data-params-url") +
+        "?strategy=" + encodeURIComponent(select.value);
+      fetch(url, {
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "fetch" },
+      })
+        .then(function (r) {
+          if (r.status === 401) { location.href = "/login"; return null; }
+          return r.ok ? r.text() : null;
+        })
+        .then(function (html) {
+          if (html !== null) box.innerHTML = html;
+        })
+        .catch(function () { /* the submit path re-renders these anyway */ });
     });
   }
 

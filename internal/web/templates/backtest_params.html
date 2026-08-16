@@ -1,0 +1,23 @@
+{{/* The backtest form's strategy-parameter block.
+
+     Defined twice over: the page embeds the body directly, and the fragment
+     wrapper is what app.js swaps in when the strategy select changes. The
+     parameters a strategy declares are not known until one is chosen, so they
+     cannot be part of the static form. */}}
+{{define "backtest_params.html"}}{{template "backtest_params_body" .Data}}{{end}}
+
+{{define "backtest_params_body"}}
+  {{if .}}
+    <fieldset class="params">
+      <legend>Strategy parameters</legend>
+      {{template "param_fields" .}}
+      <p class="muted small">
+        These are the same parameters the live start form takes, defaulted from
+        the strategy's own declaration. A backtest configured differently from
+        the instance you intend to run does not predict it.
+      </p>
+    </fieldset>
+  {{else}}
+    <p class="muted small">Choose a strategy to configure its parameters.</p>
+  {{end}}
+{{end}}
