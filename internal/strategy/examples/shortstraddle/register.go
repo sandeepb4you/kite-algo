@@ -57,6 +57,13 @@ func Descriptor() strategy.Descriptor {
 				Description: "Square off once the position's net delta drifts past this. Measured per unit, so the trigger does not move when you change lots.",
 			},
 			{
+				Key: "entry_start_time", Label: "Start entries at (IST)", Kind: strategy.KindTime,
+				Default: "09:20", Group: "Entry",
+				Description: "No entry before this time. The first minutes after the " +
+					"open are the widest spreads of the day and the ATM strike is " +
+					"still moving; 09:20 lets that settle.",
+			},
+			{
 				Key: "square_off_time", Label: "Square off by (IST)", Kind: strategy.KindTime,
 				Default: "15:15", Group: "Exit",
 				Description: "Flat by this time regardless of delta.",

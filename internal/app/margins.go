@@ -90,6 +90,24 @@ func (a *App) RefreshMargins(ctx context.Context) {
 		return
 	}
 	a.margins.set(toMargins(raw))
+
+	// Feed the live policy: the 1% daily-loss cap is a percentage of the day's
+	// OPENING balance, and this is where that number arrives.
+	if a.LiveRisk != nil {
+		m := a.margins.get()
+		a.LiveRisk.ObserveBalance(m.OpeningBalance, time.Now())
+		if lim := a.LiveRisk.MaxDailyLoss(); lim > 0 {
+			cur := a.Risk.Limits()
+			if cur.MaxDailyLoss != lim {
+				cur.MaxDailyLoss = lim
+				a.Risk.SetLimits(cur)
+				if a.Log != nil {
+					a.Log.Info("live daily-loss limit derived from opening balance",
+						"policy", a.LiveRisk.Describe())
+				}
+			}
+		}
+	}
 }
 
 func toMargins(raw kite.Margin) Margins {

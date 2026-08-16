@@ -23,6 +23,29 @@ func configuredRiskLimits(cfg *config.Config) risk.Limits {
 	}
 }
 
+// configuredLiveRiskLimits resolves the real book's non-derived limits.
+//
+// MaxDailyLoss is deliberately absent: it comes from LiveRisk, computed as a
+// percentage of the day's opening balance, and a config value here would be a
+// second source of truth that could silently disagree.
+func configuredLiveRiskLimits(cfg *config.Config) risk.Limits {
+	base := configuredRiskLimits(cfg)
+	l := cfg.Risk.Live
+
+	out := base
+	out.MaxDailyLoss = 0 // supplied by LiveRisk
+	if l.MaxOpenPositions > 0 {
+		out.MaxOpenPositions = l.MaxOpenPositions
+	}
+	if l.MaxOrderValue > 0 {
+		out.MaxOrderValue = l.MaxOrderValue
+	}
+	if l.MaxLotsPerTrade > 0 {
+		out.MaxLotsPerTrade = l.MaxLotsPerTrade
+	}
+	return out
+}
+
 // configuredPaperRiskLimits resolves the simulated book's limits.
 //
 // Each field falls back to the real limit when unset, so an operator who only
@@ -104,7 +127,7 @@ func (a *App) SaveRiskLimits(ctx context.Context, l risk.Limits) error {
 // limits through a stressful session should be able to get back to a known state
 // without remembering what the numbers originally were.
 func (a *App) ResetRiskLimits(ctx context.Context) error {
-	defaults := configuredRiskLimits(a.Cfg)
+	defaults := configuredPaperRiskLimits(a.Cfg)
 	a.SetRiskLimits(defaults)
 
 	if err := a.Store.DeleteSetting(ctx, riskLimitsKey); err != nil {

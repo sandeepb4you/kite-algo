@@ -3,6 +3,7 @@ package shortstraddle
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -396,5 +397,81 @@ func TestEntrySignalIsEmitted(t *testing.T) {
 	}
 	if tr.signals[0].Message == "" {
 		t.Error("signal has no message; the UI would show a blank line")
+	}
+}
+
+// Entry waits for the entry window to open.
+//
+// The first minutes after the open carry the widest spreads of the day and the
+// underlying is still finding a level, so an ATM straddle sold at 09:15 is
+// frequently not the straddle that was intended by 09:20 — the spot has moved a
+// strike and both legs were crossed at their worst price of the session.
+func TestNoEntryBeforeTheEntryWindowOpens(t *testing.T) {
+	open := time.Date(2026, 8, 13, 9, 15, 0, 0, ist)
+	s, tr := newStrategy(t, open)
+	ctx := context.Background()
+
+	s.OnTick(ctx, spotTick(24510))
+	if len(tr.orders) != 0 {
+		t.Fatalf("placed %d orders at 09:15, want 0 — the entry window opens at 09:20",
+			len(tr.orders))
+	}
+
+	// 09:19 is still early.
+	tr.now = open.Add(4 * time.Minute)
+	s.OnTick(ctx, spotTick(24510))
+	if len(tr.orders) != 0 {
+		t.Errorf("placed %d orders at 09:19, want 0", len(tr.orders))
+	}
+
+	// 09:20 exactly: the boundary is inclusive.
+	tr.now = open.Add(5 * time.Minute)
+	s.OnTick(ctx, spotTick(24510))
+	if len(tr.orders) != 2 {
+		t.Errorf("placed %d orders at 09:20, want 2 (both legs)", len(tr.orders))
+	}
+}
+
+// The window is a clock check, not a latch: arriving late still trades.
+func TestEntryStillHappensWhenTheFirstTickIsLate(t *testing.T) {
+	late := time.Date(2026, 8, 13, 11, 30, 0, 0, ist)
+	s, tr := newStrategy(t, late)
+
+	s.OnTick(context.Background(), spotTick(24510))
+
+	if len(tr.orders) != 2 {
+		t.Errorf("placed %d orders on a late first tick, want 2", len(tr.orders))
+	}
+}
+
+// An entry window that closes before it opens would leave the strategy running
+// all day and never trading, with nothing in the logs to say why.
+func TestInvertedEntryWindowIsRejected(t *testing.T) {
+	tr := &stubTrader{now: time.Date(2026, 8, 13, 9, 30, 0, 0, ist)}
+	s := New("short-straddle", nil)
+
+	err := s.Init(context.Background(), tr, config.StrategyCfg{Params: map[string]any{
+		"entry_start_time": "15:30",
+		"square_off_time":  "15:15",
+	}})
+	if err == nil {
+		t.Fatal("accepted an entry window that opens after the square-off time")
+	}
+	if !strings.Contains(err.Error(), "entry_start_time") {
+		t.Errorf("error does not name the offending field: %v", err)
+	}
+}
+
+// An unreadable entry clock must not silently stop the strategy trading; an
+// unreadable square-off clock must not trigger a surprise exit. Each defaults
+// to the harmless answer for its own question.
+func TestMalformedClocksFailInTheSafeDirection(t *testing.T) {
+	now := time.Date(2026, 8, 13, 10, 0, 0, 0, ist)
+
+	if !atOrAfter("not a time", now) {
+		t.Error("an unreadable entry clock blocked entry; the strategy would never trade")
+	}
+	if pastSquareOff("not a time", now) {
+		t.Error("an unreadable square-off clock triggered an exit")
 	}
 }

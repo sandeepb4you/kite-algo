@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,12 @@ type tradeData struct {
 	Streaming bool
 	Routing   string
 	LiveMode  bool
+
+	// Live marks the REAL desk. The terminal and the live desk render from one
+	// shared body template — duplicating the markup would let the two drift,
+	// and a paper ticket that has quietly diverged from the live one is exactly
+	// the sort of difference that produces a mis-click.
+	Live bool
 
 	// TicketSymbol pre-fills the order ticket. Clicking a premium in the chain
 	// submits it as ?symbol=, so selecting a contract works entirely
@@ -64,6 +71,15 @@ func (s *Server) tradeData(r *http.Request) tradeData {
 		LiveMode:  s.app.LiveActive(),
 	}
 
+	// ?page=live keeps a polled fragment rendering for the live desk. Without
+	// it a background refresh of the chain would rewrite its forms to submit
+	// back to /trade, and clicking a premium would silently move the operator
+	// from the real desk to the simulated one.
+	if strings.EqualFold(r.FormValue("page"), "live") {
+		d.Live = true
+		d.Positions = realOnly(d.Positions)
+	}
+
 	// A contract picked from the chain arrives as ?symbol=.
 	if sym := strings.ToUpper(strings.TrimSpace(r.FormValue("symbol"))); sym != "" {
 		d.TicketSymbol = sym
@@ -95,6 +111,7 @@ func (s *Server) tradeData(r *http.Request) tradeData {
 	if err := s.app.Engine.SubscribeTransient(chain.ChainSymbols()); err != nil {
 		s.log.Debug("subscribe option chain failed", "err", err)
 	}
+
 	return d
 }
 
@@ -214,15 +231,12 @@ func (s *Server) parseOrderForm(r *http.Request) (broker.OrderRequest, error) {
 		return req, fmt.Errorf("unknown lot size for %s — is the instrument master loaded?", symbol)
 	}
 
-	// The book is an explicit per-order choice, and only "real" spelled out
-	// exactly counts. Anything else — absent, misspelled, tampered with —
-	// resolves to paper. The engine re-checks this against live-armed state
-	// anyway (engine.bookFor); a form value can request the real book but can
-	// never be what grants it.
+	// Always the paper book. This endpoint serves /trade, which is simulated
+	// unconditionally; real orders are posted to /api/live/orders from the live
+	// desk. The book is a property of the ENDPOINT, never of a form value —
+	// which is what makes it impossible to send a real order from here by
+	// mis-setting a control.
 	book := broker.BookPaper
-	if strings.EqualFold(strings.TrimSpace(r.FormValue("route")), string(broker.BookReal)) {
-		book = broker.BookReal
-	}
 
 	return broker.OrderRequest{
 		Exchange:      s.app.Engine.ExchangeFor(symbol),
@@ -340,4 +354,83 @@ func joinErrs(errs []error) string {
 		parts = append(parts, e.Error())
 	}
 	return strings.Join(parts, "; ")
+}
+
+// realOnly keeps the real-money positions. The live desk shows nothing else:
+// mixing simulated rows into the page whose whole purpose is real money would
+// undo the separation it exists to create.
+func realOnly(in []broker.Position) []broker.Position {
+	out := make([]broker.Position, 0, len(in))
+	for _, p := range in {
+		if p.Book.IsReal() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// PageURL is where the chain's forms submit back to, so picking a contract
+// keeps you on the desk you were already on.
+func (d tradeData) PageURL() string {
+	if d.Live {
+		return "/live"
+	}
+	return "/trade"
+}
+
+// OrderAction is the endpoint the ticket posts to, and is the ONLY thing that
+// decides which book an order lands in.
+//
+// Derived from Live rather than stored, so there is no way to construct a page
+// whose ticket points at the live endpoint without the page also knowing it is
+// the live desk — the two cannot disagree.
+func (d tradeData) OrderAction() string {
+	if d.Live {
+		return "/api/live/orders"
+	}
+	return "/api/orders"
+}
+
+// PositionsPollURL, OrdersPollURL and ChainPollURL are the fragment URLs the
+// page polls.
+//
+// Methods rather than fields so any tradeData renders correct URLs, however it
+// was constructed — a struct literal in a test included. As fields they were
+// empty on those paths and the template emitted data-poll="".
+func (d tradeData) PositionsPollURL() string {
+	return pollURL("/partials/positions", d.Live, nil)
+}
+
+// OrdersPollURL is the open-order book's fragment URL.
+func (d tradeData) OrdersPollURL() string {
+	return pollURL("/partials/orders", d.Live, nil)
+}
+
+// ChainPollURL carries the selected underlying and expiry as well.
+func (d tradeData) ChainPollURL() string {
+	q := url.Values{}
+	if d.Chain.Underlying != "" {
+		q.Set("underlying", d.Chain.Underlying)
+		q.Set("expiry", d.Chain.Expiry.Format("2006-01-02"))
+	}
+	return pollURL("/partials/chain", d.Live, q)
+}
+
+// pollURL builds a fragment URL, carrying the page identity when the caller is
+// the live desk.
+//
+// The identity has to travel: without it a background refresh of the chain
+// would rewrite its forms to submit back to /trade, and clicking a premium
+// would silently move the operator from the real desk to the simulated one.
+func pollURL(path string, live bool, q url.Values) string {
+	if q == nil {
+		q = url.Values{}
+	}
+	if live {
+		q.Set("page", "live")
+	}
+	if len(q) == 0 {
+		return path
+	}
+	return path + "?" + q.Encode()
 }

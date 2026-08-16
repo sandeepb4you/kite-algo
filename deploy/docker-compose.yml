@@ -1,0 +1,76 @@
+# kite-algo — single-box deployment.
+#
+# ONE app container. Never scale this service.
+#
+# The database is SQLite: one writer, one file. A second instance mounting the
+# same volume corrupts it, and the damage is not obvious until a read comes back
+# wrong. There is deliberately no `deploy.replicas` here, and `docker compose up
+# --scale app=2` must never be run.
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: kite-algo:latest
+    restart: unless-stopped
+
+    # NOT published to the host. The only route in is through Caddy, on the
+    # compose network. Publishing 8080 here would quietly bypass both the TLS
+    # termination and the IP allowlist.
+    expose:
+      - "8080"
+
+    volumes:
+      # The database. This is the irreplaceable one: captured option candles
+      # cannot be downloaded again once the contracts expire.
+      - kite-data:/data
+      # Config, read-only. live_confirm has no environment override by design,
+      # so a config file is required to ever enable real trading.
+      - ./config.yaml:/etc/kite-algo/config.yaml:ro
+      # Kite credentials and the web password hash, read-only.
+      - ./secrets.yaml:/secrets/secrets.yaml:ro
+
+    environment:
+      TRADING_SECRETS_PATH: /secrets/secrets.yaml
+      TZ: Asia/Kolkata
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+
+    ports:
+      - "80:80"    # ACME HTTP-01 challenge and the redirect to HTTPS
+      - "443:443"
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data      # certificates — losing this re-issues them
+      - caddy-config:/config
+      - caddy-logs:/var/log/caddy
+
+    environment:
+      # Set both in deploy/.env — see .env.example.
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in deploy/.env}
+      ALLOWED_IPS: ${ALLOWED_IPS:?set ALLOWED_IPS in deploy/.env}
+
+volumes:
+  kite-data:
+  caddy-data:
+  caddy-config:
+  caddy-logs:

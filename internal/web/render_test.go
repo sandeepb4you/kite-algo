@@ -301,11 +301,13 @@ func TestSideToggleSubmitsAValidSide(t *testing.T) {
 	}
 }
 
-// TestLiveTicketStillConfirms is the safety property behind double-click-to-send.
-// The shortcut submits through the form, so the live-mode confirmation attached
-// to that form still applies — the shortcut saves a click, it does not remove a
-// safeguard.
-func TestLiveTicketStillConfirms(t *testing.T) {
+// The terminal is simulated unconditionally, even while live routing is armed.
+//
+// This is the property the separate live desk buys: /trade posts to
+// /api/orders, which stamps the paper book regardless of any form value, so
+// there is no control on this page that could send real money and no
+// double-click that could do it by surprise.
+func TestTerminalNeverOffersARealOrder(t *testing.T) {
 	r, err := NewRenderer(false)
 	if err != nil {
 		t.Fatal(err)
@@ -318,24 +320,95 @@ func TestLiveTicketStillConfirms(t *testing.T) {
 	}
 	body := w.Body.String()
 
-	if !strings.Contains(body, "data-confirm=") {
-		t.Error("the live ticket carries no confirmation; a double click would send unchecked")
+	if strings.Contains(body, "/api/live/orders") {
+		t.Error("the terminal can post to the live endpoint")
 	}
-	if !strings.Contains(body, "REAL ORDER") {
-		t.Error("the confirmation does not say the order is real money")
+	if strings.Contains(body, `name="route"`) {
+		t.Error("the terminal still carries a route picker; the live desk replaced it")
 	}
-	// The prompt must be conditional on the route. Confirming simulated orders
-	// too would train the operator to dismiss it reflexively — exactly the
-	// habit you do not want on the submission that moves real money.
-	if !strings.Contains(body, `data-confirm-when="route=real"`) {
-		t.Error("the confirmation is unconditional; it would fire on paper orders too")
+	if strings.Contains(body, "PLACE REAL ORDER") {
+		t.Error("the terminal offers a real-order button")
 	}
-	// The route picker must default to paper.
-	if !strings.Contains(body, `value="paper" checked`) {
-		t.Error("the route picker does not default to paper; forgetting to choose would send real money")
+	// And it should point the operator at where real orders actually happen.
+	if !strings.Contains(body, `href="/live"`) {
+		t.Error("the terminal does not link to the live desk while armed")
 	}
-	if !strings.Contains(body, "PLACE REAL ORDER") || !strings.Contains(body, "Place PAPER order") {
-		t.Error("the submit button does not offer both labels; it must track the route picker")
+}
+
+// The live desk must not render a ticket until routing is armed, and the gate
+// must demand both the phrase and the password.
+func TestLiveDeskGatesBeforeArming(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "live", LiveArmed: true}, CSRF: "x",
+		Data: liveData{Configured: true, Armed: false, SessionOK: true}}
+	if err := r.Render(w, 200, "live.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	if strings.Contains(body, `action="/api/live/orders"`) {
+		t.Error("an unarmed live desk rendered an order ticket")
+	}
+	if !strings.Contains(body, "I UNDERSTAND") {
+		t.Error("the gate does not ask for the confirmation phrase")
+	}
+	if !strings.Contains(body, `name="password"`) {
+		t.Error("the gate does not re-ask for the password")
+	}
+}
+
+// Once armed the desk shows a ticket that confirms unconditionally — every
+// order from this page is real, so there is no case where the prompt is noise.
+func TestLiveDeskArmedTicketConfirms(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "live", LiveActive: true}, CSRF: "x",
+		Data: liveData{tradeData: tradeData{Live: true},
+			Configured: true, Armed: true, SessionOK: true}}
+	if err := r.Render(w, 200, "live.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	if !strings.Contains(body, `action="/api/live/orders"`) {
+		t.Error("the armed desk has no real order ticket")
+	}
+	if !strings.Contains(body, "data-confirm=") || !strings.Contains(body, "REAL ORDER") {
+		t.Error("the real ticket does not confirm; a double click would send unchecked")
+	}
+	// Disarming must be present and must not be gated behind a phrase.
+	if !strings.Contains(body, `action="/api/live/disarm"`) {
+		t.Error("no way to disarm from the page that armed")
+	}
+}
+
+// A build that is not configured for live must say so instead of showing a gate
+// that cannot open.
+func TestLiveDeskExplainsWhenNotConfigured(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "paper"}, CSRF: "x",
+		Data: liveData{Configured: false, Mode: "paper"}}
+	if err := r.Render(w, 200, "live.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	if strings.Contains(body, "I UNDERSTAND") {
+		t.Error("offered a confirmation gate in a build that cannot go live")
+	}
+	if !strings.Contains(body, "live_confirm") {
+		t.Error("did not explain what to change to enable live trading")
 	}
 }
 
@@ -499,5 +572,112 @@ func TestLiveAndHaltChromeRender(t *testing.T) {
 				t.Error("halted session did not render the halt banner")
 			}
 		})
+	}
+}
+
+// The instrument label must decompose a dense symbol, and must never guess.
+func TestInstrumentLabelSplitsSymbols(t *testing.T) {
+	cases := []struct{ symbol, name, expiry string }{
+		{"NIFTY2681824350CE", "NIFTY 24350 CE", "18 Aug"},
+		{"NIFTY2681824350PE", "NIFTY 24350 PE", "18 Aug"},
+		{"SENSEX2682075700CE", "SENSEX 75700 CE", "20 Aug"},
+	}
+	for _, tc := range cases {
+		got := instrumentLabel(tc.symbol)
+		if got.Name != tc.name {
+			t.Errorf("%s: Name = %q, want %q", tc.symbol, got.Name, tc.name)
+		}
+		if got.Expiry != tc.expiry {
+			t.Errorf("%s: Expiry = %q, want %q", tc.symbol, got.Expiry, tc.expiry)
+		}
+		if got.Raw != tc.symbol {
+			t.Errorf("%s: Raw = %q, the full symbol must survive for copying", tc.symbol, got.Raw)
+		}
+	}
+}
+
+// A prettified label that is subtly wrong about the strike would be worse than
+// the dense original, so anything unparseable falls back verbatim.
+func TestInstrumentLabelFallsBackToTheRawSymbol(t *testing.T) {
+	for _, sym := range []string{"NIFTY 50", "SOMETHING-ODD", "", "INFY"} {
+		got := instrumentLabel(sym)
+		if got.Name != sym {
+			t.Errorf("instrumentLabel(%q).Name = %q, want the raw symbol", sym, got.Name)
+		}
+	}
+}
+
+// The live desk must be the terminal, not a reduced copy of it.
+//
+// A separate simplified desk would drift as the terminal gained features, and a
+// real ticket that has quietly diverged from the paper one is precisely the
+// difference that produces a mis-click. Both render terminal_body.
+func TestLiveDeskIsTheFullTerminal(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	render := func(tmpl string, data any) string {
+		w := httptest.NewRecorder()
+		v := pageView{Status: app.Status{Mode: "live", LiveActive: true}, CSRF: "x", Data: data}
+		if err := r.Render(w, 200, tmpl, v); err != nil {
+			t.Fatalf("render %s: %v", tmpl, err)
+		}
+		return w.Body.String()
+	}
+
+	live := render("live.html", liveData{tradeData: tradeData{Live: true},
+		Configured: true, Armed: true, SessionOK: true})
+	paper := render("trade.html", tradeData{LiveMode: true})
+
+	// Everything the terminal has, the live desk has too.
+	for _, want := range []string{
+		"Option chain",  // the chain was missing entirely before
+		"col-chain",     //
+		"col-ticket",    //
+		"col-book",      // positions + orders panel
+		"tab-positions", //
+		"tab-orders",    //
+		"Square off everything",
+	} {
+		if !strings.Contains(live, want) {
+			t.Errorf("live desk is missing %q, which the terminal has", want)
+		}
+		if !strings.Contains(paper, want) {
+			t.Errorf("terminal is missing %q", want)
+		}
+	}
+}
+
+// The two desks must post to different endpoints, and each must poll fragments
+// that keep it on its own page.
+func TestDesksPostAndPollToTheirOwnEndpoints(t *testing.T) {
+	paper := tradeData{}
+	live := tradeData{Live: true}
+
+	if got := paper.OrderAction(); got != "/api/orders" {
+		t.Errorf("terminal posts to %q", got)
+	}
+	if got := live.OrderAction(); got != "/api/live/orders" {
+		t.Errorf("live desk posts to %q", got)
+	}
+	if got := paper.PageURL(); got != "/trade" {
+		t.Errorf("terminal chain submits to %q", got)
+	}
+	if got := live.PageURL(); got != "/live" {
+		t.Errorf("live desk chain submits to %q", got)
+	}
+
+	// The page identity must survive into every polled fragment, or a
+	// background refresh rewrites the chain's forms to point at /trade and
+	// clicking a premium moves the operator off the real desk silently.
+	for _, got := range []string{live.ChainPollURL(), live.PositionsPollURL(), live.OrdersPollURL()} {
+		if !strings.Contains(got, "page=live") {
+			t.Errorf("live poll URL %q loses the page identity", got)
+		}
+	}
+	// And the terminal's stay clean.
+	if got := paper.PositionsPollURL(); got != "/partials/positions" {
+		t.Errorf("terminal positions poll = %q, want a bare path", got)
 	}
 }

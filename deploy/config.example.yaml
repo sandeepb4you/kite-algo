@@ -1,0 +1,89 @@
+# Deployment config. Copy to deploy/config.yaml and edit.
+#
+# Differs from the repo-root config.example.yaml in three ways that matter in a
+# container, all of them marked CONTAINER below.
+
+mode: paper          # paper until you have watched it run; then live
+live_confirm: false  # must be true before the live desk can be armed
+
+log:
+  level: info
+  format: json       # CONTAINER: structured logs for `docker compose logs`
+
+kite:
+  api_key: ""        # leave empty: comes from secrets.yaml
+  api_secret: ""
+  access_token: ""
+  base_url: "https://api.kite.trade"
+  ticker_url: "wss://ws.kite.trade"
+
+web:
+  # CONTAINER: bind every interface INSIDE the container so Caddy, which is a
+  # different container, can reach it. This is not exposed to the host or the
+  # internet — see the `expose:` (not `ports:`) stanza in docker-compose.yml.
+  #
+  # The application refuses to start on a non-loopback address with no password
+  # set, which is the check that stops this being a mistake.
+  addr: "0.0.0.0:8080"
+
+  # CONTAINER: must equal SITE_ADDRESS in .env, with the scheme.
+  # <public_url>/kite/callback goes in the Kite developer console verbatim.
+  public_url: "https://kite.example.com"
+
+  password_hash: ""  # leave empty: comes from secrets.yaml
+
+  # CONTAINER: Caddy fronts the app, so the peer address is always Caddy's.
+  # Without this the login lockout and the live-arming lockout key off one
+  # address for everybody, making the throttle global instead of per-attacker.
+  trust_proxy: true
+
+  session_ttl: 720h
+  tick_interval_ms: 200
+
+storage:
+  sqlite_path: "/data/trading.db"   # CONTAINER: the mounted volume
+
+secrets_path: "/secrets/secrets.yaml"
+
+recording:
+  ticks: false
+
+capture:
+  enabled: true
+  run_at: "15:40"
+  interval: "5minute"
+  strikes: 20
+  expiries: 4
+  lookback_days: 30
+  underlyings:
+    - name: "NIFTY"
+      index: "NIFTY 50"
+    - name: "SENSEX"
+      index: "SENSEX"
+  holidays: []
+
+risk:
+  max_daily_loss: 5000
+  max_open_positions: 5
+  max_order_value: 100000
+  max_lots_per_trade: 1
+  live:
+    max_loss_pct: 1.0
+    expiry_square_off_time: "15:00"
+  paper:
+    max_daily_loss: 25000
+    max_lots_per_trade: 10
+
+strategies:
+  - name: "short-straddle"
+    enabled: true
+    params:
+      index_symbol: "NIFTY 50"
+      underlying: "NIFTY"
+      strike_step: 50
+      lots: 1
+      entry_start_time: "09:20"
+      exit_delta: 0.25
+      risk_free_rate: 0.06
+      square_off_time: "15:15"
+      product: "MIS"

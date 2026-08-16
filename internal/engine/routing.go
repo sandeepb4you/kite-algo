@@ -198,3 +198,35 @@ func (e *Engine) riskFor(b broker.Book) *risk.Manager {
 	}
 	return e.risk
 }
+
+// SetLiveGate installs a predicate consulted before every real-money ENTRY.
+//
+// Separate from the risk manager because it answers a different question. The
+// risk manager evaluates one order against limits; this asks whether the real
+// book is open for business at all — a daily-loss lockout, or an account whose
+// balance is not yet known so the percentage limit cannot be computed. It fails
+// closed: no gate installed means live entries proceed to the risk manager as
+// before, but a gate that says no is final.
+func (e *Engine) SetLiveGate(fn func() (bool, string)) {
+	e.cmu.Lock()
+	e.liveGate = fn
+	e.cmu.Unlock()
+}
+
+// liveGateAllows consults the gate, defaulting to allow when none is set.
+func (e *Engine) liveGateAllows() (bool, string) {
+	e.cmu.RLock()
+	fn := e.liveGate
+	e.cmu.RUnlock()
+	if fn == nil {
+		return true, ""
+	}
+	return fn()
+}
+
+// LiquidationOrder sequences positions so SHORT legs are covered first,
+// exported for callers that flatten a subset (the expiry sweeper) and must not
+// lose that ordering.
+func (e *Engine) LiquidationOrder(positions []broker.Position) []broker.Position {
+	return liquidationOrder(positions)
+}

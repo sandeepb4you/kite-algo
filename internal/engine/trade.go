@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"kite-algo/internal/broker"
@@ -70,10 +71,7 @@ func (e *Engine) SquareOffAll(ctx context.Context) ([]*broker.Order, []error) {
 		placed []*broker.Order
 		errs   []error
 	)
-	for _, p := range e.Positions() {
-		if !p.IsOpen() {
-			continue
-		}
+	for _, p := range liquidationOrder(e.Positions()) {
 		o, err := e.flatten(ctx, p)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", p.TradingSymbol, err))
@@ -82,6 +80,33 @@ func (e *Engine) SquareOffAll(ctx context.Context) ([]*broker.Order, []error) {
 		placed = append(placed, o)
 	}
 	return placed, errs
+}
+
+// liquidationOrder sequences a flatten so SHORT legs are covered first.
+//
+// Closing a short means BUYING it back, and that is the order that must go
+// first. Consider a spread — short 24350 CE, long 24500 CE. Sell the long leg
+// first and the hedge is gone: for the moment between the two orders the book
+// is NAKED SHORT, margin spikes, and the broker can reject the second leg
+// outright, leaving the operator holding exactly the position they were trying
+// to escape. Buying the short back first walks the other way: the interim state
+// is long-only, risk is capped, and margin falls rather than rises.
+//
+// Flat positions are dropped here rather than at the call site so every
+// liquidation path gets the same ordering.
+func liquidationOrder(positions []broker.Position) []broker.Position {
+	out := make([]broker.Position, 0, len(positions))
+	for _, p := range positions {
+		if p.IsOpen() {
+			out = append(out, p)
+		}
+	}
+	// Stable, so positions within a leg keep their incoming order and a
+	// liquidation is reproducible.
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].IsShort() && !out[j].IsShort()
+	})
+	return out
 }
 
 // flatten places the opposing market order for one position.

@@ -12,7 +12,9 @@
 {{$c := .Data.Chain}}
 {{$exp := $c.Expiry.Format "2006-01-02"}}
 
-<form method="get" action="/trade" class="chain-controls">
+{{/* Submits back to the page it is rendered on, so picking a contract on
+     the live desk keeps you on the live desk. */}}
+<form method="get" action="{{.Data.PageURL}}" class="chain-controls">
   <label for="underlying">Underlying</label>
   <select id="underlying" name="underlying">
     {{if not $c.Underlyings}}<option value="{{$c.Underlying}}">{{$c.Underlying}}</option>{{end}}
@@ -51,7 +53,7 @@
      scripting on, app.js intercepts and fills the ticket in place. */}}
 {{/* The strike table scrolls inside its own box so a 21-row chain cannot push
      the positions panel off the bottom of the screen. */}}
-<form method="get" action="/trade" class="chain-form chain-scroll">
+<form method="get" action="{{.Data.PageURL}}" class="chain-form chain-scroll">
   <input type="hidden" name="underlying" value="{{$c.Underlying}}">
   <input type="hidden" name="expiry" value="{{$exp}}">
 

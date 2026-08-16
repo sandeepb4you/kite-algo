@@ -585,20 +585,42 @@ The rule lives in one function (`engine.bookFor`). Reaching the exchange takes
 anything else -> paper broker
 ```
 
-Condition 3 matters as much as the others: **"manual" and "real" are not the
-same thing.** With strategies still on paper you will want to place the odd
-manual order into the *simulated* book too — same screen, same ticket — and
-routing every manual order live the moment live was armed would make that
-impossible. So the order ticket grows a route picker when live is armed. It
-defaults to PAPER and is re-rendered per page load, so a real order is a
-deliberate click every single time, and forgetting to choose gives you a
-simulated order rather than a real one.
+Condition 3 is decided by **which page you posted from**, not by a control on a
+shared ticket:
 
-The picker drives the submit label and the confirmation dialog in CSS, so the
-button cannot say "real" while paper is selected. The confirm is conditional
-(`data-confirm-when="route=real"`) — prompting on simulated orders too would
-train you to dismiss it reflexively, which is the habit you least want on the
-one submission that moves money.
+| Page | Posts to | Book |
+|---|---|---|
+| `/trade` — terminal | `/api/orders` | always paper |
+| `/live` — **live desk** | `/api/live/orders` | real |
+| strategies | (engine) | always paper |
+
+That separation is the safety argument. A form value can be mis-set, mis-read,
+restored by a browser, or replayed; a URL cannot be any of those by accident.
+`/trade` stamps `BookPaper` in the handler regardless of what the form says, so
+there is no control on that page capable of sending real money — and a test
+asserts the terminal never renders the live endpoint, a route picker, or a
+real-order button, even while routing is armed.
+
+### The live desk — `/live`
+
+The one page where an order can reach the exchange. It is marked in the nav at
+all times, armed or not, so its slot is never somewhere the hand lands by muscle
+memory expecting a simulated page, and the page carries its own red frame.
+
+**The arming gate lives on the page it governs**, not on a settings screen.
+Until it is passed, `/live` renders the gate and *no ticket at all* — you cannot
+type an order there. The gate asks for `I UNDERSTAND` plus your password
+(re-entering it defeats someone walking up to an unlocked browser) and is rate
+limited through the same `auth.LoginGuard` as the login form; without that it
+would be a password oracle with no lockout.
+
+Once armed the desk shows a real ticket, **real positions only**, and that
+book's P&L. Disarming is one click — no phrase, no password. The asymmetry is
+deliberate: standing down is a de-escalation and must never be harder than
+escalating, or an operator who wants to stop is fighting the interface to do it.
+
+A build not started in live mode shows an explanation of what to change rather
+than a gate that cannot open.
 
 **There is no "all live" mode and no per-strategy live flag.** Routing a
 strategy to the exchange would have to be a code change to that function,
@@ -619,13 +641,33 @@ Live routing still requires all three existing gates — `mode: live`,
 What changed is what confirming *does*: it installs a live broker for manual
 orders rather than swapping the engine's broker wholesale.
 
-**Risk is evaluated per book.** Two `risk.Manager` instances, two P&L totals.
-A strategy exhausting its daily-loss allowance blocks strategies and leaves your
-real manual trading alone; a real-money loss blocks manual orders and lets the
-strategies keep being evaluated. Configure the simulated side under
-`risk.paper` — unset fields inherit the real limits, because an unset field
-becoming "no limit" would silently remove a guardrail. The operator kill switch
-remains global, which is what a kill switch means.
+**Risk is evaluated per book**, and the two are not the same kind of object.
+
+Paper limits are a dial: tuned from `/risk` while a strategy is evaluated,
+persisted, and harmless to get wrong. Configure them under `risk.paper`; unset
+fields inherit the top-level ones, because an unset field becoming "no limit"
+would silently remove a guardrail.
+
+**Live limits are derived and locked.** They are not editable from the UI at
+all — `/risk` renders them read-only — because a limit you can loosen from a
+browser at the moment it starts hurting is not a limit. Changing them means
+editing `risk.live` and restarting.
+
+| Live rule | Behaviour |
+|---|---|
+| `max_loss_pct: 1.0` | Daily loss cap = 1% of the account's **opening balance**, snapshotted once per day. A percentage so it tracks the account; snapshotted because available margin *falls* as a position moves against you, and a live-derived limit would tighten exactly when you are already hurting. |
+| Day lockout | Breaching it bars new live **entries** for the rest of the day. Persisted to the `settings` table — a lockout a restart clears is not a lockout, and a restart is what an operator reaches for after a bad morning. Exits always remain allowed. |
+| `expiry_square_off_time: "15:00"` | Open **real** positions in contracts expiring today are flattened at that IST time. Expiry-day gamma makes a position that looked small at noon very large by the close. Simulated positions are left to run — they are the point of a simulation. |
+| Unknown balance | Live entries are **refused**, not permitted. If the balance is unknown the 1% cap cannot be computed, and trading real money against a limit nobody can evaluate is worse than not trading. |
+
+**Liquidation covers shorts first.** Closing a short means *buying* it back, and
+that order must go first. Sell the long leg of a spread first and the hedge is
+gone: between the two orders the book is naked short, margin spikes, and the
+broker can reject the second leg — leaving you holding exactly the position you
+were trying to escape. `engine.liquidationOrder` sequences every flatten path,
+including the expiry sweep.
+
+The operator kill switch remains global, which is what a kill switch means.
 
 **Positions are shown as two sections, real first**, each with its own P&L
 total, and `positions.book` is part of the table's primary key so a simulated
@@ -668,6 +710,37 @@ inactive.
 > database accumulated 34 `COMPLETE` orders against 0 fill rows. `handleFill`
 > now upserts the parent order first. See
 > `TestFillsPersistWhenBrokerFillsSynchronously`.
+
+---
+
+## Deployment
+
+Docker assets live in `deploy/`: a multi-stage `Dockerfile` (CGO-free, so the
+runtime image needs no C toolchain or libsqlite), a compose file pairing the app
+with Caddy for TLS and an IP allowlist, and `deploy/README.md` with the full
+walkthrough.
+
+Three constraints shape any deployment of this app, and they rule some options
+out:
+
+- **SQLite means one writer.** One container, one volume, never scaled. Anything
+  that can start a second instance — autoscaling, rolling deploys with overlap —
+  will corrupt the database, and the corruption surfaces later as a read that
+  quietly comes back wrong.
+- **The Kite redirect URL must match character for character.** You need one
+  stable hostname, registered in the Kite developer console, equal to
+  `web.public_url` + `/kite/callback`.
+- **Somebody must log in to Zerodha every trading day.** Tokens expire around
+  06:00 IST and renew only through an interactive browser login. Deploying to a
+  server does not automate this, and a day without a login is a day of option
+  data that cannot be recovered.
+
+Behind a reverse proxy, set `web.trust_proxy: true`. The login lockout and the
+live-arming lockout key off the client address; without it every request appears
+to come from the proxy and the throttle becomes global rather than
+per-attacker. The app reads only the right-most `X-Forwarded-For` entry — the
+one the proxy itself appended — so a client cannot spoof its way to a fresh
+lockout budget.
 
 ---
 

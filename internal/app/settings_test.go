@@ -46,12 +46,20 @@ var configDefaults = config.RiskConfig{
 // TestRiskLimitsSurviveARestart is the point of persisting them: limits tuned
 // during a session must still be in force after a redeploy or a crash, not
 // silently revert to whatever config.yaml happened to say.
+// These exercise the SIMULATED book's limits.
+//
+// Runtime overrides and the /risk page apply to paper only: the real book's
+// limits are derived from the account's opening balance and are deliberately
+// unreachable from storage or the UI. App.Risk is the live manager and its
+// daily loss is 0 until Zerodha reports a balance — which is why every
+// assertion here reads PaperRisk.
+
 func TestRiskLimitsSurviveARestart(t *testing.T) {
 	ctx := context.Background()
 	db := filepath.Join(t.TempDir(), "risk.db")
 
 	first := riskTestApp(t, db, configDefaults)
-	if got := first.Risk.Limits().MaxDailyLoss; got != 5000 {
+	if got := first.PaperRisk.Limits().MaxDailyLoss; got != 5000 {
 		t.Fatalf("initial max daily loss = %v, want the configured 5000", got)
 	}
 	if first.RiskOverridden() {
@@ -69,7 +77,7 @@ func TestRiskLimitsSurviveARestart(t *testing.T) {
 	// Restart against the same database.
 	second := riskTestApp(t, db, configDefaults)
 
-	got := second.Risk.Limits()
+	got := second.PaperRisk.Limits()
 	if got != tightened {
 		t.Errorf("after restart limits = %+v, want the saved %+v", got, tightened)
 	}
@@ -92,7 +100,7 @@ func TestResetRestoresConfigDefaults(t *testing.T) {
 		t.Fatalf("ResetRiskLimits: %v", err)
 	}
 
-	if got := a.Risk.Limits().MaxDailyLoss; got != 5000 {
+	if got := a.PaperRisk.Limits().MaxDailyLoss; got != 5000 {
 		t.Errorf("max daily loss = %v, want the configured 5000 after a reset", got)
 	}
 	if a.RiskOverridden() {
@@ -101,7 +109,7 @@ func TestResetRestoresConfigDefaults(t *testing.T) {
 
 	// And the reset must persist: a restart should not resurrect the override.
 	restarted := riskTestApp(t, db, configDefaults)
-	if got := restarted.Risk.Limits().MaxDailyLoss; got != 5000 {
+	if got := restarted.PaperRisk.Limits().MaxDailyLoss; got != 5000 {
 		t.Errorf("after restart max daily loss = %v; the deleted override came back", got)
 	}
 }
@@ -118,7 +126,7 @@ func TestConfigChangesApplyWhenNotOverridden(t *testing.T) {
 	raised.MaxDailyLoss = 9999
 	second := riskTestApp(t, db, raised)
 
-	if got := second.Risk.Limits().MaxDailyLoss; got != 9999 {
+	if got := second.PaperRisk.Limits().MaxDailyLoss; got != 9999 {
 		t.Errorf("max daily loss = %v, want the edited config value 9999", got)
 	}
 }
@@ -138,7 +146,7 @@ func TestSavedOverrideBeatsConfig(t *testing.T) {
 	changed.MaxDailyLoss = 88888
 	second := riskTestApp(t, db, changed)
 
-	if got := second.Risk.Limits().MaxDailyLoss; got != 1234 {
+	if got := second.PaperRisk.Limits().MaxDailyLoss; got != 1234 {
 		t.Errorf("max daily loss = %v, want the saved override 1234", got)
 	}
 }
@@ -155,7 +163,7 @@ func TestCorruptSettingFallsBackToConfig(t *testing.T) {
 	}
 
 	second := riskTestApp(t, db, configDefaults)
-	if got := second.Risk.Limits().MaxDailyLoss; got != 5000 {
+	if got := second.PaperRisk.Limits().MaxDailyLoss; got != 5000 {
 		t.Errorf("max daily loss = %v; a corrupt override should fall back to config", got)
 	}
 	if second.RiskOverridden() {

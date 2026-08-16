@@ -232,3 +232,44 @@ func TestManualOrderStaysPaperUnlessItAsksForReal(t *testing.T) {
 			"asked for the real book", len(live.placed))
 	}
 }
+
+// A liquidation must cover SHORT legs before selling long ones.
+//
+// Selling the long leg of a spread first removes the hedge: for the moment
+// between the two orders the book is naked short, margin spikes, and the broker
+// can reject the second leg — leaving the operator holding the exact position
+// they were trying to escape.
+func TestLiquidationCoversShortsFirst(t *testing.T) {
+	in := []broker.Position{
+		{TradingSymbol: "LONG-A", NetQuantity: 65},
+		{TradingSymbol: "SHORT-A", NetQuantity: -65},
+		{TradingSymbol: "FLAT", NetQuantity: 0},
+		{TradingSymbol: "LONG-B", NetQuantity: 130},
+		{TradingSymbol: "SHORT-B", NetQuantity: -130},
+	}
+
+	got := liquidationOrder(in)
+
+	if len(got) != 4 {
+		t.Fatalf("got %d positions, want 4 (the flat one dropped)", len(got))
+	}
+	// Every short must precede every long.
+	seenLong := false
+	for _, p := range got {
+		if p.IsLong() {
+			seenLong = true
+			continue
+		}
+		if seenLong {
+			t.Errorf("short %s sequenced after a long — the hedge would be released first",
+				p.TradingSymbol)
+		}
+	}
+	// Stable within each leg, so a liquidation is reproducible.
+	if got[0].TradingSymbol != "SHORT-A" || got[1].TradingSymbol != "SHORT-B" {
+		t.Errorf("shorts reordered: %s, %s", got[0].TradingSymbol, got[1].TradingSymbol)
+	}
+	if got[2].TradingSymbol != "LONG-A" || got[3].TradingSymbol != "LONG-B" {
+		t.Errorf("longs reordered: %s, %s", got[2].TradingSymbol, got[3].TradingSymbol)
+	}
+}

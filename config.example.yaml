@@ -117,6 +117,30 @@ risk:
   max_open_positions: 5         # distinct open symbols
   max_order_value: 100000       # rupees per single order (qty * price)
   max_lots_per_trade: 1
+
+  # --- REAL book -------------------------------------------------------------
+  # Derived and LOCKED. Unlike `paper` below, none of this is editable from the
+  # UI: a limit you can loosen from a browser at the moment it starts hurting is
+  # not a limit. Changing any of it means editing this file and restarting.
+  live:
+    # Daily loss cap as a percentage of the account's OPENING balance,
+    # snapshotted once per trading day. A percentage so the limit tracks the
+    # account; snapshotted because available margin FALLS as a position moves
+    # against you, and a live-derived limit would tighten exactly when you are
+    # already hurting.
+    #
+    # Breaching it locks out new live ENTRIES for the rest of the day. The
+    # lockout is persisted, so a restart does not clear it. Exits always remain
+    # allowed.
+    max_loss_pct: 1.0
+
+    # IST time at which open REAL positions in contracts expiring TODAY are
+    # squared off. Expiry-day gamma makes a position that looked small at noon
+    # very large by the close. Set to "off" to disable.
+    #
+    # Simulated positions are never touched: they are the point of a
+    # simulation and are left to run.
+    expiry_square_off_time: "15:00"
   # Limits for the SIMULATED book, which runs alongside the real one: manual
   # orders can be routed to the exchange while every strategy stays on paper.
   # Unset fields inherit the real limits above.
@@ -139,6 +163,9 @@ strategies:
       underlying: "NIFTY"        # option underlying to trade
       strike_step: 50            # NIFTY grid (use 100 for BANKNIFTY)
       lots: 1                    # lots per leg (1 = 75 qty for NIFTY)
+      entry_start_time: "09:20"  # no entry before this IST time: the first
+                                 # minutes carry the widest spreads of the day
+                                 # and the ATM strike is still moving
       exit_delta: 0.25           # square off when |net position delta| > this
       risk_free_rate: 0.06       # annualized, for Black-Scholes
       square_off_time: "15:15"   # flat by this IST time, regardless of delta

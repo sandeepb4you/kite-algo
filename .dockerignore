@@ -1,0 +1,21 @@
+# The build context should carry source only.
+#
+# data/ especially: it is the SQLite database, already 140 MB and growing, and
+# copying it into the build context would slow every build down and risk baking
+# a stale copy into an image layer.
+data/
+*.db
+*.db-shm
+*.db-wal
+
+.git/
+.idea/
+.zcode/
+deploy/
+
+# Real credentials and any local config must never enter an image.
+secrets.yaml
+config.yaml
+
+*.exe
+tmp*/

@@ -189,18 +189,35 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 
 // riskData drives the risk-limit editor.
 type riskData struct {
+	// Limits and Defaults are the SIMULATED book's — the only ones this page
+	// may change.
 	Limits     risk.Limits
 	Defaults   risk.Limits
 	Overridden bool
+
+	// LiveLimits and LivePolicy are shown READ-ONLY. The real book's daily loss
+	// is derived from the account's opening balance, and none of it is editable
+	// here: a limit you can loosen from a browser at the moment it starts
+	// hurting is not a limit.
+	LiveLimits risk.Limits
+	LivePolicy string
+	LockedDay  string
+	LockReason string
 }
 
 // handleRisk renders the risk-limit editor.
 func (s *Server) handleRisk(w http.ResponseWriter, r *http.Request) {
-	s.renderPage(w, r, "risk.html", "Risk", riskData{
-		Limits:     s.app.Risk.Limits(),
+	d := riskData{
+		Limits:     s.app.PaperRisk.Limits(),
 		Defaults:   s.app.ConfiguredRiskLimits(),
 		Overridden: s.app.RiskOverridden(),
-	})
+		LiveLimits: s.app.Risk.Limits(),
+	}
+	if s.app.LiveRisk != nil {
+		d.LivePolicy = s.app.LiveRisk.Describe()
+		d.LockedDay, d.LockReason = s.app.LiveRisk.Lockout()
+	}
+	s.renderPage(w, r, "risk.html", "Risk", d)
 }
 
 // handleSetRiskLimits applies edited limits at runtime.
@@ -210,7 +227,7 @@ func (s *Server) handleSetRiskLimits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	current := s.app.Risk.Limits()
+	current := s.app.PaperRisk.Limits()
 	next := current
 	var problems []string
 

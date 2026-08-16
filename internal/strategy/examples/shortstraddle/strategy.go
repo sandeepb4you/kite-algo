@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,14 +34,15 @@ type Strategy struct {
 	logger *slog.Logger
 
 	// Config (read from the YAML strategy params block).
-	indexSymbol    string  // spot index to track, e.g. "NIFTY 50"
-	underlying     string  // option underlying, e.g. "NIFTY"
-	strikeStep     float64 // strike grid, e.g. 50 (NIFTY), 100 (BANKNIFTY)
-	lots           int
-	exitDelta      float64 // square off when |net delta| exceeds this (per unit)
-	riskFreeRate   float64 // annualized rate for Black-Scholes
-	squareOffClock string  // "15:15" IST — flat by this time
-	product        broker.ProductType
+	indexSymbol     string  // spot index to track, e.g. "NIFTY 50"
+	underlying      string  // option underlying, e.g. "NIFTY"
+	strikeStep      float64 // strike grid, e.g. 50 (NIFTY), 100 (BANKNIFTY)
+	lots            int
+	exitDelta       float64 // square off when |net delta| exceeds this (per unit)
+	riskFreeRate    float64 // annualized rate for Black-Scholes
+	entryStartClock string  // "09:20" IST — no entry before this
+	squareOffClock  string  // "15:15" IST — flat by this time
+	product         broker.ProductType
 
 	mu      sync.Mutex
 	armed   bool           // options subscribed?
@@ -104,8 +106,19 @@ func (s *Strategy) Init(ctx context.Context, trader strategy.Trader, cfg config.
 	s.lots = get.ParamInt("lots")
 	s.exitDelta = get.ParamFloat("exit_delta")
 	s.riskFreeRate = get.ParamFloat("risk_free_rate")
+	s.entryStartClock = get.ParamString("entry_start_time")
 	s.squareOffClock = get.ParamString("square_off_time")
 	s.product = broker.ProductType(get.ParamString("product"))
+
+	// An entry window that closes before it opens would leave the strategy
+	// running all day and never trading, with nothing in the logs to say why.
+	// Caught at Init so it surfaces when the operator clicks start, not at
+	// 15:15 when they wonder where the position went.
+	if !clockBefore(s.entryStartClock, s.squareOffClock) {
+		return fmt.Errorf(
+			"entry_start_time %s is not before square_off_time %s, so the strategy could never enter",
+			s.entryStartClock, s.squareOffClock)
+	}
 
 	// Subscribe to the spot index so OnTick drives entry.
 	if err := trader.Subscribe([]string{s.indexSymbol}); err != nil {
@@ -114,7 +127,8 @@ func (s *Strategy) Init(ctx context.Context, trader strategy.Trader, cfg config.
 	if s.logger != nil {
 		s.logger.Info("short-straddle initialized",
 			"index", s.indexSymbol, "underlying", s.underlying,
-			"lots", s.lots, "exit_delta", s.exitDelta, "square_off", s.squareOffClock)
+			"lots", s.lots, "exit_delta", s.exitDelta,
+			"entry_start", s.entryStartClock, "square_off", s.squareOffClock)
 	}
 	return nil
 }
@@ -196,11 +210,22 @@ func (s *Strategy) maybeEnter(ctx context.Context, spot float64) {
 	}
 	s.mu.Unlock()
 
+	now := s.trader.Now()
+
+	// Hold off until the entry window opens. The first minutes after the open
+	// carry the widest spreads of the day and the underlying is still finding a
+	// level, so an ATM straddle sold at 09:15 is frequently not the straddle
+	// that was intended by 09:20 — the spot has moved a strike and both legs
+	// were crossed at their worst price of the session.
+	if !atOrAfter(s.entryStartClock, now) {
+		return
+	}
+
 	// Never open a position the exit path would close on this very tick. A first
 	// tick arriving after the square-off clock — a late start, a reconnect, a
 	// backtest whose window opens mid-afternoon — would otherwise sell the
 	// straddle and buy it straight back, paying both spreads for no exposure.
-	if pastSquareOff(s.squareOffClock, s.trader.Now()) {
+	if pastSquareOff(s.squareOffClock, now) {
 		return
 	}
 
@@ -483,11 +508,46 @@ var ist = time.FixedZone("IST", 5*3600+30*60)
 // It takes `now` as a parameter rather than reading the clock itself, so the
 // same code is correct under live trading and under a backtest's simulated time.
 func pastSquareOff(clock string, now time.Time) bool {
-	t, err := time.Parse("15:04", clock)
-	if err != nil {
+	target, ok := clockOn(clock, now)
+	if !ok {
 		return false
 	}
+	return now.In(ist).After(target)
+}
+
+// atOrAfter reports whether `now` has reached the clock time in IST.
+//
+// Returns TRUE for an unparseable clock, the opposite of pastSquareOff. Each
+// defaults to the harmless answer for its own question: an unreadable
+// square-off time must not trigger a surprise exit, and an unreadable entry
+// time must not silently prevent the strategy from ever trading.
+func atOrAfter(clock string, now time.Time) bool {
+	target, ok := clockOn(clock, now)
+	if !ok {
+		return true
+	}
+	return !now.In(ist).Before(target)
+}
+
+// clockOn resolves "HH:MM" against the IST calendar day of `now`.
+func clockOn(clock string, now time.Time) (time.Time, bool) {
+	t, err := time.Parse("15:04", strings.TrimSpace(clock))
+	if err != nil {
+		return time.Time{}, false
+	}
 	local := now.In(ist)
-	target := time.Date(local.Year(), local.Month(), local.Day(), t.Hour(), t.Minute(), 0, 0, ist)
-	return local.After(target)
+	return time.Date(local.Year(), local.Month(), local.Day(),
+		t.Hour(), t.Minute(), 0, 0, ist), true
+}
+
+// clockBefore reports whether clock a is strictly earlier in the day than b.
+// An unparseable clock is treated as ordered, so validation rejects only a
+// genuine inversion rather than a typo the parser already handles elsewhere.
+func clockBefore(a, b string) bool {
+	ta, err1 := time.Parse("15:04", strings.TrimSpace(a))
+	tb, err2 := time.Parse("15:04", strings.TrimSpace(b))
+	if err1 != nil || err2 != nil {
+		return true
+	}
+	return ta.Before(tb)
 }

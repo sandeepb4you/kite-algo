@@ -55,10 +55,16 @@
   {{$csrf := .CSRF}}
   {{range .Positions}}
     <tr>
-      <td>
-        <span class="mono sym">{{.TradingSymbol}}</span>
+      {{/* The raw symbol is seventeen undifferentiated characters and the eye
+           has to parse it a digit at a time to find the strike — the number you
+           are actually looking for. Split into underlying / strike / side, with
+           the expiry demoted to the second line. The full symbol stays in the
+           title attribute for copying. */}}
+      {{$i := instrument .TradingSymbol}}
+      <td title="{{$i.Raw}}">
+        <span class="mono sym">{{$i.Name}}</span>
         <span class="sub">
-          {{if .StrategyID}}{{.StrategyID}}{{else}}manual{{end}} · {{.Product}}
+          {{if $i.Expiry}}{{$i.Expiry}} · {{end}}{{if .StrategyID}}{{.StrategyID}}{{else}}manual{{end}} · {{.Product}}
         </span>
       </td>
       <td class="r mono {{if lt .NetQuantity 0}}pnl-down{{else}}pnl-up{{end}}">{{.NetQuantity}}</td>

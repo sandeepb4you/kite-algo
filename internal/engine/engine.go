@@ -106,6 +106,8 @@ type Engine struct {
 	// liveBroker routes MANUAL orders to the exchange while strategies stay on
 	// the paper broker. Nil until an operator explicitly confirms live routing.
 	liveBroker broker.Broker
+	// liveGate is consulted before every real-money entry; see SetLiveGate.
+	liveGate func() (bool, string)
 	// orderBooks remembers which broker each order went to, so a cancel reaches
 	// the one that actually holds it.
 	orderBooks *orderBooks
@@ -533,6 +535,24 @@ func (e *Engine) placeOrderInternal(ctx context.Context, req broker.OrderRequest
 	book := e.bookFor(req)
 	openPositions := e.snapshotBookPositionCount(book)
 	dayPnL := e.snapshotBookPnL(book)
+
+	// The real book can be closed for the day independently of any single
+	// order's merits. Exits are exempt: a lockout must never trap the operator
+	// in the position that caused it.
+	if book.IsReal() && req.Intent != broker.IntentClose {
+		if ok, why := e.liveGateAllows(); !ok {
+			err := &risk.RiskError{Rule: "live-lockout", Message: why}
+			e.pub.Publish(events.Event{
+				Kind:       events.KindOrderRejected,
+				Symbol:     req.TradingSymbol,
+				StrategyID: req.StrategyID,
+				Level:      events.LevelWarn,
+				Message:    why,
+				Fields:     map[string]any{"rule": "live-lockout"},
+			})
+			return nil, err
+		}
+	}
 	openingNew := openPositions == 0 || !e.hasPosition(req.TradingSymbol)
 
 	if err := e.riskFor(book).Check(ctx, req, lotSize, openPositions, dayPnL, openingNew); err != nil {

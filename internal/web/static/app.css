@@ -14,7 +14,18 @@
   --up: #26a96c;
   --down: #e5484d;
   --warn: #f5a623;
-  --live: #c2262b;
+  /* Two reds, because one token cannot serve both jobs. --live is a surface:
+     backgrounds and borders with white text on top, so it must stay dark
+     enough for that. --live-text is for red TEXT on the dark background, where
+     the surface red is too low-contrast to read.
+
+     Both are muted from the original #c2262b. Live chrome is permanent
+     furniture on this screen, and a fully saturated red on every border and
+     badge stops registering as a warning once you have looked at it all
+     morning. */
+  --live: #9c3a3e;
+  --live-text: #d98d90;
+  --live-tint: rgb(156 58 62 / 0.12);
   --radius: 8px;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
 }
@@ -52,7 +63,7 @@ body.centered {
 
 /* A live session also gets a permanent red frame, so the state is visible even
    when the page is scrolled past the band. */
-html[data-live="true"] body { box-shadow: inset 0 0 0 3px var(--live); }
+html[data-live="true"] body { box-shadow: inset 0 0 0 2px var(--live); }
 
 /* --- chrome -------------------------------------------------------------- */
 
@@ -464,12 +475,23 @@ main { padding: 20px 16px; max-width: 1560px; margin: 0 auto; }
 
 /* Two-line rows in the book: symbol on top, context beneath. Keeps P&L in view
    instead of pushed off the right edge by a seventh column. */
-.positions .sym, .orders .sym { display: block; font-size: 12px; }
+/* The instrument is the row's anchor: it is what you look at first to know
+   which row you are reading. It was set a point smaller than the numbers beside
+   it, which inverted that. Now it leads. */
+.positions .sym, .orders .sym {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  white-space: nowrap;
+}
 .positions .sub, .orders .sub {
   display: block;
   color: var(--muted);
   font-size: 10.5px;
-  line-height: 1.3;
+  line-height: 1.35;
+  white-space: nowrap;
 }
 .positions td, .orders td { padding: 5px 6px; vertical-align: top; }
 
@@ -671,43 +693,26 @@ details summary { cursor: pointer; }
 .book-real  { border-left: 3px solid var(--live); padding-left: 10px; }
 .book-paper { border-left: 3px solid var(--line); padding-left: 10px; }
 
-/* --- order route picker --------------------------------------------------- */
+/* --- live desk ------------------------------------------------------------ */
 
-/* Shown only when live routing is armed. The two options are styled very
-   differently on purpose: picking the real book should feel like a different
-   action, not like changing a dropdown. */
-.route {
-  margin: 10px 0;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-.route legend {
-  padding: 0 4px;
-  color: var(--muted);
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.route-opt {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 3px 0;
-  cursor: pointer;
-  font-size: 12.5px;
-}
-.route-opt-paper span { color: var(--muted); }
-.route-opt-real span  { color: var(--live); font-weight: 700; }
-/* Once real is selected the whole box turns, so the state is visible without
-   reading the radio. */
-.route:has(.route-opt-real input:checked) {
-  border-color: var(--live);
-  background: rgb(194 38 43 / 0.10);
-}
+/* The live tab is marked in the nav at all times, armed or not. Its slot must
+   never be somewhere the hand lands by muscle memory expecting a paper page. */
+.nav-live { color: var(--live-text) !important; font-weight: 700; }
+.nav-live.on { background: var(--live) !important; color: #fff !important; }
 
-/* Submit label follows the route picker. Pure CSS so the button text and the
-   selected route cannot disagree, which a JS handler could get wrong. */
-.lbl-real { display: none; }
-#ticket:has(.route-opt-real input:checked) .lbl-paper { display: none; }
-#ticket:has(.route-opt-real input:checked) .lbl-real  { display: inline; }
+/* The page carries a red frame of its own, independent of the global live
+   frame, so it is unmistakable even before routing is armed. */
+.livedesk {
+  border: 2px solid var(--live);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.livedesk .gate { max-width: 520px; }
+
+.live-armed { border-color: var(--live); background: var(--live-tint); }
+.live-armed-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.live-armed-head .disarm { margin-left: auto; }
+
+/* The live policy block on /risk is read-only and marked as real money. */
+.live-policy { border-left: 3px solid var(--live); }
+.live-policy h2 { color: var(--live-text); }

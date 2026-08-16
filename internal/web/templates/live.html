@@ -1,0 +1,106 @@
+{{define "live.html"}}
+{{template "head" .}}
+
+{{/* The one page where an order can reach the exchange.
+
+     Below the gate this is the SAME desk as /trade — same ticket, same option
+     chain, same positions and order book — rendered from the shared
+     terminal_body template. Keeping a separate simplified copy would let the
+     two drift, and a real ticket that has quietly diverged from the paper one
+     is precisely the difference that produces a mis-click. Everything that
+     differs is a field on the page data, not a fork in the markup. */}}
+
+<div class="livedesk">
+
+{{if not .Data.Configured}}
+  {{/* Nothing to confirm: the process was not started in live mode. Say what to
+       change rather than showing a gate that cannot open. */}}
+  <div class="card">
+    <h1>Live desk</h1>
+    <p class="alert alert-warn">
+      This build is running in <b>{{.Data.Mode}}</b> mode, so real orders are not
+      possible and nothing on this page can change that.
+    </p>
+    <p class="muted small">
+      To enable real manual trading, set <code>mode: live</code> and
+      <code>live_confirm: true</code> in <code>config.yaml</code> and restart.
+      You will then be asked to confirm here before anything is routed.
+      Strategies stay simulated either way.
+    </p>
+  </div>
+
+{{else if not .Data.Armed}}
+  {{/* The gate, shown INSTEAD of the desk. There is deliberately no way to type
+       an order on this page until routing is armed. */}}
+  <div class="card card-form gate">
+    <h1>Live desk — not armed</h1>
+    <p class="alert alert-error">
+      Orders placed on this page go to the exchange with <b>real money</b>.
+      Nothing else in this application can do that.
+    </p>
+
+    {{if not .Data.SessionOK}}
+      <p class="alert alert-warn">
+        No active Zerodha session. <a href="/connect">Connect</a> before arming —
+        live routing needs a live broker to install.
+      </p>
+    {{end}}
+
+    <form method="post" action="/api/live/confirm" data-result="#live-result" autocomplete="off">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+
+      <label for="phrase">Type <code>I UNDERSTAND</code> to confirm</label>
+      <input id="phrase" name="phrase" type="text" autocomplete="off"
+             spellcheck="false" placeholder="I UNDERSTAND" required>
+
+      {{/* Re-entering the password defeats someone walking up to an unlocked,
+           already-logged-in browser. */}}
+      <label for="password">Re-enter your password</label>
+      <input id="password" name="password" type="password"
+             autocomplete="current-password" required>
+
+      <button class="btn btn-danger" type="submit"
+              {{if not .Data.SessionOK}}disabled{{end}}>
+        ARM LIVE ROUTING
+      </button>
+    </form>
+    <p class="muted small">
+      Arming affects <b>manual orders placed on this page only</b>. Every
+      strategy stays on the paper broker, by construction — there is no setting
+      that changes that. Live limits are fixed in <code>config.yaml</code> and
+      cannot be changed from the UI.
+    </p>
+    <div id="live-result" aria-live="polite"></div>
+  </div>
+
+{{else}}
+  <div class="card live-armed">
+    <div class="live-armed-head">
+      <span class="book-tag book-tag-real">LIVE — REAL MONEY</span>
+      <span class="muted small">
+        Orders on this desk reach the exchange. Strategies remain simulated.
+      </span>
+      <form method="post" action="/api/live/disarm" data-result="#live-result" class="inline disarm">
+        <input type="hidden" name="_csrf" value="{{.CSRF}}">
+        {{/* One click, no phrase, no password. Standing down is a
+             de-escalation and must never be harder than escalating. */}}
+        <button class="btn btn-sm" type="submit">Disarm</button>
+      </form>
+    </div>
+
+    {{if .Data.LockedDay}}
+      <p class="alert alert-error">
+        <b>Locked out for {{.Data.LockedDay}}.</b> {{.Data.LockReason}}
+        New entries are refused for the rest of the day; exits are still
+        allowed. It clears tomorrow, and a restart will not clear it.
+      </p>
+    {{end}}
+    <div id="live-result" aria-live="polite"></div>
+  </div>
+
+  {{template "terminal_body" .}}
+{{end}}
+
+</div>
+{{template "foot" .}}
+{{end}}

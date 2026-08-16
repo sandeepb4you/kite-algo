@@ -1,0 +1,36 @@
+# TLS termination and the IP allowlist.
+#
+# Caddy is the only thing on the box facing the internet. The application binds
+# inside the compose network and is not published to the host, so there is no
+# path to it that does not pass through here.
+
+{$SITE_ADDRESS} {
+	# Allowlist. remote_ip matches the real TCP peer — Caddy is the edge, so no
+	# trusted_proxies clause is wanted here; adding one would let a client
+	# spoof its own address through X-Forwarded-For.
+	@allowed remote_ip {$ALLOWED_IPS}
+
+	handle @allowed {
+		# Caddy APPENDS the real client IP to X-Forwarded-For, so the right-most
+		# entry is trustworthy. The application reads exactly that one (see
+		# Server.clientIP) and only when web.trust_proxy is true, which is why
+		# that must be set in config.yaml — without it every request looks like
+		# it came from Caddy and the login lockout becomes global instead of
+		# per-attacker.
+		reverse_proxy app:8080
+	}
+
+	# Anything else gets a flat refusal with no hint that a login page exists.
+	handle {
+		respond "Not found" 404
+	}
+
+	encode gzip
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}

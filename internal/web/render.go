@@ -8,11 +8,13 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"kite-algo/internal/broker"
+	"kite-algo/internal/options"
 )
 
 // Renderer parses and executes the HTML templates.
@@ -114,6 +116,37 @@ func splitByBook(positions []broker.Position, csrf string) (real, paper position
 	return real, paper
 }
 
+// symbolLabel is a trading symbol broken into readable parts.
+//
+// "NIFTY2681824350CE" is seventeen undifferentiated characters and the eye has
+// to parse it a digit at a time to find the strike — which is the number you
+// are actually looking for in a positions row. Split, it reads at a glance.
+type symbolLabel struct {
+	Name   string // "NIFTY 24350 CE"
+	Expiry string // "18 Aug", empty when unknown
+	Raw    string
+}
+
+// instrumentLabel decomposes a trading symbol for display.
+//
+// Falls back to the raw symbol whenever it cannot parse, which is the only safe
+// direction: a prettified label that is subtly wrong about the strike would be
+// worse than the dense original.
+func instrumentLabel(symbol string) symbolLabel {
+	out := symbolLabel{Name: symbol, Raw: symbol}
+
+	spec, ok := options.ParseSymbol(symbol)
+	if !ok || spec.Underlying == "" || spec.Strike <= 0 {
+		return out
+	}
+	strike := strconv.FormatFloat(spec.Strike, 'f', -1, 64)
+	out.Name = spec.Underlying + " " + strike + " " + spec.Type.String()
+	if !spec.Expiry.IsZero() {
+		out.Expiry = spec.Expiry.Format("02 Jan")
+	}
+	return out
+}
+
 // funcMap holds the formatting helpers templates use. Keeping presentation
 // logic here rather than in JavaScript means paper and live views cannot drift.
 func funcMap() template.FuncMap {
@@ -152,8 +185,10 @@ func funcMap() template.FuncMap {
 				return "pnl-flat"
 			}
 		},
-		"num": func(f float64) string { return fmt.Sprintf("%.2f", f) },
-		"pct": func(f float64) string { return fmt.Sprintf("%.2f%%", f) },
+		// instrument splits a dense trading symbol into readable parts.
+		"instrument": instrumentLabel,
+		"num":        func(f float64) string { return fmt.Sprintf("%.2f", f) },
+		"pct":        func(f float64) string { return fmt.Sprintf("%.2f%%", f) },
 		// ivpct renders a volatility given as a FRACTION (0.145) as a percentage
 		// (14.50%). Distinct from pct, which takes a number already in percent —
 		// passing an IV to that one renders 14% vol as "0.15%".

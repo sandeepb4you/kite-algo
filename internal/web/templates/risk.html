@@ -1,12 +1,43 @@
 {{define "risk.html"}}
 {{template "head" .}}
 
+{{/* The REAL book's policy, shown but not editable.
+
+     Paper limits are a dial the operator tunes while a strategy is evaluated,
+     and getting one wrong costs nothing. Live limits guard real capital, so
+     they are derived from the account's own opening balance and changeable
+     only by editing config and restarting. A limit you can loosen from a
+     browser at the moment it starts hurting is not a limit. */}}
+<div class="card live-policy">
+  <h2>Live (real money) — read-only</h2>
+  {{if .Data.LockedDay}}
+    <p class="alert alert-error">
+      <b>Live trading is locked out for {{.Data.LockedDay}}.</b>
+      {{.Data.LockReason}} Exits are still allowed. It clears tomorrow, and a
+      restart will not clear it.
+    </p>
+  {{end}}
+  <table class="kv">
+    <tr><th>Daily loss cap</th><td class="mono">{{.Data.LivePolicy}}</td></tr>
+    <tr><th>Max open positions</th><td class="mono">{{.Data.LiveLimits.MaxOpenPositions}}</td></tr>
+    <tr><th>Max order value</th><td class="mono">{{money .Data.LiveLimits.MaxOrderValue}}</td></tr>
+    <tr><th>Max lots per trade</th><td class="mono">{{.Data.LiveLimits.MaxLotsPerTrade}}</td></tr>
+  </table>
+  <p class="muted small">
+    Set under <code>risk.live</code> in <code>config.yaml</code>; a restart is
+    required. Breaching the daily cap locks out new live entries for the rest of
+    the day. Open real positions in contracts expiring today are squared off
+    automatically, shorts covered first.
+  </p>
+</div>
+
 <div class="card card-form">
-  <h1>Risk limits</h1>
+  <h1>Paper risk limits</h1>
   <p class="muted">
-    Applied before every order, whether it came from a strategy or from the
-    terminal. Changes take effect on the next order; orders already with the
-    broker are unaffected.
+    Applied to the <b>simulated</b> book before every order, whether it came
+    from a strategy or from the terminal. Changes take effect on the next order;
+    orders already with the broker are unaffected. The real book's limits are
+    above and are not editable here.
   </p>
 
   {{if .Data.Overridden}}

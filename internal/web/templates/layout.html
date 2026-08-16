@@ -57,6 +57,10 @@
   <nav>
     <a href="/" {{if eq .Nav ""}}class="on"{{end}}>Dashboard</a>
     <a href="/trade" {{if eq .Nav "trade"}}class="on"{{end}}>Terminal</a>
+    {{/* The live desk is styled apart from every other tab, always, whether or
+         not it is armed. Its position in the nav should never be somewhere the
+         hand goes by muscle memory expecting a simulated page. */}}
+    <a href="/live" class="nav-live {{if eq .Nav "live"}}on{{end}}">● Live</a>
     <a href="/strategies" {{if eq .Nav "strategies"}}class="on"{{end}}>Strategies</a>
     <a href="/market" {{if eq .Nav "market"}}class="on"{{end}}>Market</a>
     <a href="/research" {{if eq .Nav "research"}}class="on"{{end}}>Research</a>

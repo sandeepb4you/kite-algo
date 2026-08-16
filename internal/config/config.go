@@ -220,6 +220,11 @@ type RiskConfig struct {
 	MaxOrderValue    float64 `yaml:"max_order_value"`    // rupees per single order
 	MaxLotsPerTrade  int     `yaml:"max_lots_per_trade"` // lots allowed in one order
 
+	// Live are the REAL book's limits. Derived and locked: unlike Paper, these
+	// are not editable from the UI. A limit you can loosen from a browser at
+	// the moment it starts hurting is not a limit.
+	Live LiveRiskConfig `yaml:"live"`
+
 	// Paper are the limits applied to the SIMULATED book, which runs alongside
 	// the real one: manual orders can be routed to the exchange while every
 	// strategy stays simulated.
@@ -229,6 +234,30 @@ type RiskConfig struct {
 	// hand, and a simulated blow-up must not block real manual trading. Unset
 	// fields fall back to the real limits above.
 	Paper PaperRiskConfig `yaml:"paper"`
+}
+
+// LiveRiskConfig is the real book's policy. Changing any of it requires
+// editing this file and restarting — deliberately.
+type LiveRiskConfig struct {
+	// MaxLossPct is the daily loss cap as a percentage of the account's
+	// OPENING balance, snapshotted once per trading day. A percentage rather
+	// than a rupee figure so the limit tracks the account; snapshotted rather
+	// than live because available margin falls as a position moves against you,
+	// and a limit derived from it would tighten exactly when you are already
+	// hurting. Default 1.0.
+	MaxLossPct float64 `yaml:"max_loss_pct"`
+
+	// ExpirySquareOffTime is the IST time ("15:00") at which open REAL
+	// positions in contracts expiring TODAY are flattened. Expiry-day gamma
+	// makes a position that looked small at noon very large by the close.
+	ExpirySquareOffTime string `yaml:"expiry_square_off_time"`
+
+	// MaxOpenPositions, MaxOrderValue and MaxLotsPerTrade mirror the fields
+	// above and apply to the real book only. Unset inherits the top-level
+	// values.
+	MaxOpenPositions int     `yaml:"max_open_positions"`
+	MaxOrderValue    float64 `yaml:"max_order_value"`
+	MaxLotsPerTrade  int     `yaml:"max_lots_per_trade"`
 }
 
 // PaperRiskConfig overrides risk limits for the simulated book.
@@ -421,6 +450,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Capture.LookbackDays == 0 {
 		c.Capture.LookbackDays = 30
+	}
+	if c.Risk.Live.MaxLossPct == 0 {
+		c.Risk.Live.MaxLossPct = 1.0
+	}
+	if c.Risk.Live.ExpirySquareOffTime == "" {
+		c.Risk.Live.ExpirySquareOffTime = "15:00"
 	}
 	if len(c.Capture.Underlyings) == 0 {
 		c.Capture.Underlyings = []CaptureUnderlying{

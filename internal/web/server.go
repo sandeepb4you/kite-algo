@@ -83,6 +83,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /{$}", page(s.handleDashboard))
 	mux.Handle("GET /market", page(s.handleMarket))
 	mux.Handle("GET /trade", page(s.handleTrade))
+	mux.Handle("GET /live", page(s.handleLive))
 	mux.Handle("POST /logout", page(s.handleLogout))
 
 	// Order entry and position management. Every one of these is a
@@ -107,6 +108,10 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /api/risk/reset", page(s.handleResetRiskLimits))
 
 	mux.Handle("POST /api/orders", page(s.handlePlaceOrder))
+	// The only endpoint that can reach the exchange.
+	mux.Handle("POST /api/live/orders", page(s.handlePlaceLiveOrder))
+	mux.Handle("POST /api/live/confirm", page(s.handleLiveConfirm))
+	mux.Handle("POST /api/live/disarm", page(s.handleLiveDisarm))
 	mux.Handle("POST /api/orders/{id}/cancel", page(s.handleCancelOrder))
 	mux.Handle("POST /api/positions/squareoff", page(s.handleSquareOff))
 	mux.Handle("GET /api/instruments", page(s.handleInstrumentSearch))

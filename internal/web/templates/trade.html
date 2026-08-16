@@ -2,23 +2,86 @@
 {{template "head" .}}
 
 {{if .Data.LiveMode}}
-<p class="alert alert-error">
-  <b>LIVE.</b> Orders placed here go to the exchange with real money.
+<p class="alert alert-warn">
+  Live routing is armed, but <b>orders placed here are still simulated</b>.
+  Real orders are placed on the <a href="/live">Live desk</a>.
 </p>
 {{end}}
 
+{{template "terminal_body" .}}
+
+{{template "foot" .}}
+{{end}}
+
+
+{{/* Compact for the narrow book column: the essentials in columns, the rest as
+     secondary text under the symbol. */}}
+{{define "orders_table"}}
+{{if .Data.Orders}}
+<table class="grid-table orders">
+  <thead>
+    <tr>
+      <th>Instrument</th>
+      <th class="r">Qty</th>
+      <th class="r">Price</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Data.Orders}}
+    <tr>
+      {{$i := instrument .TradingSymbol}}
+      <td title="{{$i.Raw}}">
+        <span class="mono sym">{{$i.Name}}</span>
+        <span class="sub">
+          <b class="{{if eq (printf "%s" .Side) "BUY"}}pnl-up{{else}}pnl-down{{end}}">{{.Side}}</b>
+          · {{.OrderType}} · {{.Status}}
+          {{/* Which broker handled it, so a day that mixed paper and live is
+               unambiguous after the fact. */}}
+          · {{upper .Mode}}
+        </span>
+      </td>
+      <td class="r mono">{{.FilledQuantity}}/{{.Quantity}}</td>
+      <td class="r mono">{{if .Price}}{{num .Price}}{{else}}MKT{{end}}</td>
+      <td class="r">
+        <form method="post" action="/api/orders/{{.ID}}/cancel"
+              data-result="#order-result" class="inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+          <button class="btn btn-quiet btn-sm" type="submit">✕</button>
+        </form>
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+  <p class="muted">No open orders.</p>
+{{end}}
+{{end}}
+
+
+{{/* The three-column desk, shared by /trade and /live so the two cannot
+     drift apart. Everything that differs between them is a field on the page
+     data, not a fork in the markup. */}}
+{{define "terminal_body"}}
 <div class="cols-3">
   <section class="card col-ticket">
-    <h2>Order ticket</h2>
+    <h2>{{if .Data.Live}}Real order ticket{{else}}Order ticket{{end}}</h2>
 
     {{/* In live mode the ticket demands an extra deliberate confirmation. In
          paper mode it does not — friction there teaches you to click through
          the dialog, which is exactly the habit you do not want when it starts
          guarding real money. */}}
-    <form id="ticket" method="post" action="/api/orders" class="ticket"
+    {{/* Always simulated. Real orders live on their own page (/live), so this
+         ticket needs no route control, no conditional confirmation, and no way
+         to reach the exchange by accident. */}}
+    {{/* Which book an order lands in is decided by the ACTION, not by any
+         control inside the form. /trade posts to /api/orders and is simulated
+         unconditionally; the live desk posts to /api/live/orders. A form value
+         can be mis-set or restored by a browser; an endpoint cannot. */}}
+    <form id="ticket" method="post" action="{{.Data.OrderAction}}" class="ticket"
           data-result="#order-result"
-          {{if .Data.LiveMode}}data-confirm-when="route=real"
-          data-confirm="REAL ORDER — this sends real money to the exchange. Send it?"{{end}}>
+          {{if .Data.Live}}data-confirm="REAL ORDER — this sends real money to the exchange. Send it?"{{end}}>
       <input type="hidden" name="_csrf" value="{{.CSRF}}">
 
       <label for="symbol">Instrument</label>
@@ -48,7 +111,7 @@
       </div>
       <p class="muted small hint">
         Click to choose a side · <b>double-click to send</b>
-        {{if .Data.LiveMode}} — live orders still ask for confirmation{{end}}
+
       </p>
 
       <div class="row">
@@ -87,40 +150,8 @@
         </div>
       </div>
 
-      {{/* Route picker, only when live routing is armed.
-
-           "Manual" and "real" are not the same thing. With strategies still
-           being evaluated on paper, an operator wants to place the occasional
-           manual order into the SIMULATED book too — same screen, same ticket.
-           Routing every manual order live the moment live was armed would make
-           that impossible.
-
-           PAPER is checked by default and the control is re-rendered on every
-           page load, so the selection never persists across orders. Sending a
-           real order is a deliberate click, every single time. */}}
-      {{if .Data.LiveMode}}
-      <fieldset class="route">
-        <legend>Route this order to</legend>
-        <label class="route-opt route-opt-paper">
-          <input type="radio" name="route" value="paper" checked>
-          <span>PAPER — simulated</span>
-        </label>
-        <label class="route-opt route-opt-real">
-          <input type="radio" name="route" value="real">
-          <span>REAL — exchange, real money</span>
-        </label>
-      </fieldset>
-      {{end}}
-
-      {{/* The label tracks the route picker, in CSS, with no JavaScript: the
-           button must never say "real" while paper is selected, or the reverse.
-           Outside live mode there is only one possibility, so it is stated
-           flatly. */}}
-      <button class="btn {{if .Data.LiveMode}}btn-danger{{else}}btn-primary{{end}}" type="submit">
-        {{if .Data.LiveMode}}
-          <span class="lbl-paper">Place PAPER order</span>
-          <span class="lbl-real">PLACE REAL ORDER — LIVE</span>
-        {{else}}Place paper order{{end}}
+      <button class="btn {{if .Data.Live}}btn-danger{{else}}btn-primary{{end}}" type="submit">
+        {{if .Data.Live}}PLACE REAL ORDER{{else}}Place paper order{{end}}
       </button>
     </form>
 
@@ -129,7 +160,7 @@
 
   <section class="card col-chain">
     <h2>Option chain</h2>
-    <div data-poll="/partials/chain{{if .Data.Chain.Underlying}}?underlying={{.Data.Chain.Underlying}}&expiry={{.Data.Chain.Expiry.Format "2006-01-02"}}{{end}}"
+    <div data-poll="{{.Data.ChainPollURL}}"
          data-poll-ms="15000">
       {{template "option_chain" .}}
     </div>
@@ -159,9 +190,10 @@
     </div>
 
     <div id="panel-positions" class="tab-panel panel-positions">
-      <div data-poll="/partials/positions" data-poll-ms="5000">
+      <div data-poll="{{.Data.PositionsPollURL}}" data-poll-ms="5000">
         {{template "positions_book" (realpos .Data.Positions .CSRF)}}
-    {{template "positions_book" (paperpos .Data.Positions .CSRF)}}
+        {{/* The live desk shows the real book only; the terminal shows both. */}}
+        {{if not .Data.Live}}{{template "positions_book" (paperpos .Data.Positions .CSRF)}}{{end}}
       </div>
       {{/* Outside the polled div: a refresh would otherwise wipe the button. */}}
       <form method="post" action="/api/positions/squareoff"
@@ -173,7 +205,7 @@
     </div>
 
     <div id="panel-orders" class="tab-panel panel-orders">
-      <div data-poll="/partials/orders" data-poll-ms="4000">
+      <div data-poll="{{.Data.OrdersPollURL}}" data-poll-ms="4000">
         {{template "orders_table" .}}
       </div>
     </div>
@@ -184,50 +216,4 @@
      working with, and the index spot sits in the chain header. The watchlist
      lives on /market for anyone who wants it. */}}
 
-{{template "foot" .}}
-{{end}}
-
-
-{{/* Compact for the narrow book column: the essentials in columns, the rest as
-     secondary text under the symbol. */}}
-{{define "orders_table"}}
-{{if .Data.Orders}}
-<table class="grid-table orders">
-  <thead>
-    <tr>
-      <th>Instrument</th>
-      <th class="r">Qty</th>
-      <th class="r">Price</th>
-      <th></th>
-    </tr>
-  </thead>
-  <tbody>
-  {{range .Data.Orders}}
-    <tr>
-      <td>
-        <span class="mono sym">{{.TradingSymbol}}</span>
-        <span class="sub">
-          <b class="{{if eq (printf "%s" .Side) "BUY"}}pnl-up{{else}}pnl-down{{end}}">{{.Side}}</b>
-          · {{.OrderType}} · {{.Status}}
-          {{/* Which broker handled it, so a day that mixed paper and live is
-               unambiguous after the fact. */}}
-          · {{upper .Mode}}
-        </span>
-      </td>
-      <td class="r mono">{{.FilledQuantity}}/{{.Quantity}}</td>
-      <td class="r mono">{{if .Price}}{{num .Price}}{{else}}MKT{{end}}</td>
-      <td class="r">
-        <form method="post" action="/api/orders/{{.ID}}/cancel"
-              data-result="#order-result" class="inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRF}}">
-          <button class="btn btn-quiet btn-sm" type="submit">✕</button>
-        </form>
-      </td>
-    </tr>
-  {{end}}
-  </tbody>
-</table>
-{{else}}
-  <p class="muted">No open orders.</p>
-{{end}}
 {{end}}

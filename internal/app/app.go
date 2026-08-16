@@ -40,10 +40,15 @@ type App struct {
 	Engine *engine.Engine
 	Risk   *risk.Manager
 	// PaperRisk governs the simulated book, which runs alongside the real one.
+	// This is the ONLY one the /risk page may change.
 	PaperRisk *risk.Manager
-	Kite      *KiteSession
-	Sessions  *auth.Sessions
-	Guard     *auth.LoginGuard
+	// LiveRisk is the real book's derived, UI-locked policy: a daily loss cap
+	// expressed as a percentage of the day's opening balance, plus the
+	// once-per-day lockout that follows a breach.
+	LiveRisk *LiveRisk
+	Kite     *KiteSession
+	Sessions *auth.Sessions
+	Guard    *auth.LoginGuard
 
 	// paper is the simulated broker. It is ALWAYS the broker the engine starts
 	// with, including when the config says live: real order routing is only
@@ -113,12 +118,21 @@ func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog
 			log.Warn(fmt.Sprintf(format, args...))
 		}
 	}
-	limits, overridden := loadRiskLimits(ctx, store, cfg, logf)
-	riskMgr := risk.NewManager(limits)
+	// A saved override applies to the SIMULATED book only; the real book's
+	// limits come from config and the derived percentage, never from storage.
+	savedPaper, overridden := loadRiskLimits(ctx, store, cfg, logf)
+	riskMgr := risk.NewManager(configuredLiveRiskLimits(cfg))
+	limits := savedPaper
 	// The simulated book gets its own manager, so a strategy exhausting its
 	// daily-loss allowance blocks strategies and leaves real manual trading
 	// untouched.
-	paperRisk := risk.NewManager(configuredPaperRiskLimits(cfg))
+	paperLimits := configuredPaperRiskLimits(cfg)
+	if overridden {
+		paperLimits = savedPaper
+	}
+	paperRisk := risk.NewManager(paperLimits)
+	liveRisk := NewLiveRisk(cfg.Risk.Live.MaxLossPct)
+	liveRisk.Restore(ctx, store)
 
 	if log != nil {
 		log.Info("risk limits loaded",
@@ -158,6 +172,17 @@ func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog
 	}
 	eng.SetPaperRisk(paperRisk)
 	a.PaperRisk = paperRisk
+	a.LiveRisk = liveRisk
+
+	// The real book's manager carries the config-derived caps; its daily loss
+	// is refreshed from the opening balance as the margin loop learns it.
+	// Live entries are gated on the derived policy in addition to the limits.
+	// Exits are exempt — every rule here caps risk being taken on, and applied
+	// to a flatten they would trap the operator in the position the rule exists
+	// to protect them from.
+	eng.SetLiveGate(func() (bool, string) {
+		return liveRisk.Allow(time.Now())
+	})
 	a.Kite = NewKiteSession(cfg, store, eng, bus, log)
 
 	// Best-effort: pick up a token persisted earlier today.
@@ -173,7 +198,9 @@ func (a *App) Run(ctx context.Context) error {
 	go a.Sessions.GC(ctx, time.Hour)
 	go a.guardSweep(ctx)
 	go a.marginLoop(ctx)
+	go a.WatchRealPnL(ctx)
 	a.startCapture(ctx)
+	a.startExpirySweeper(ctx)
 	return a.Engine.Start(ctx)
 }
 
@@ -315,17 +342,22 @@ func (a *App) DisarmLive(ctx context.Context) {
 	})
 }
 
-// SetRiskLimits updates the live risk limits.
+// SetRiskLimits updates the runtime risk limits.
 //
 // Limits are runtime state, not config: when a position is moving against you,
-// tightening the daily-loss cap should not require editing a YAML file and
-// restarting the process that is holding the position.
+// tightening the cap should not require editing a YAML file and restarting the
+// process that is holding the position.
+//
+// It applies to the SIMULATED book only. The real book's limits are derived
+// from the account's opening balance and are deliberately unreachable from the
+// UI — a limit you can loosen from a browser at the moment it starts hurting is
+// not a limit. Changing those means editing config.yaml and restarting.
 func (a *App) SetRiskLimits(l risk.Limits) {
-	old := a.Risk.Limits()
-	a.Risk.SetLimits(l)
+	old := a.PaperRisk.Limits()
+	a.PaperRisk.SetLimits(l)
 
 	if a.Log != nil {
-		a.Log.Warn("risk limits changed",
+		a.Log.Warn("PAPER risk limits changed",
 			"max_daily_loss", l.MaxDailyLoss, "was", old.MaxDailyLoss,
 			"max_order_value", l.MaxOrderValue,
 			"max_lots_per_trade", l.MaxLotsPerTrade,
@@ -334,7 +366,7 @@ func (a *App) SetRiskLimits(l risk.Limits) {
 	a.Bus.Publish(events.Event{
 		Kind:    events.KindStatus,
 		Level:   events.LevelWarn,
-		Message: "risk limits updated",
+		Message: "paper risk limits updated (live limits are config-locked)",
 	})
 }
 
