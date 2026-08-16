@@ -219,6 +219,24 @@ type RiskConfig struct {
 	MaxOpenPositions int     `yaml:"max_open_positions"` // concurrent open positions
 	MaxOrderValue    float64 `yaml:"max_order_value"`    // rupees per single order
 	MaxLotsPerTrade  int     `yaml:"max_lots_per_trade"` // lots allowed in one order
+
+	// Paper are the limits applied to the SIMULATED book, which runs alongside
+	// the real one: manual orders can be routed to the exchange while every
+	// strategy stays simulated.
+	//
+	// They are separate because the two hold different money. A strategy under
+	// evaluation is supposed to be allowed to lose more than you would risk by
+	// hand, and a simulated blow-up must not block real manual trading. Unset
+	// fields fall back to the real limits above.
+	Paper PaperRiskConfig `yaml:"paper"`
+}
+
+// PaperRiskConfig overrides risk limits for the simulated book.
+type PaperRiskConfig struct {
+	MaxDailyLoss     float64 `yaml:"max_daily_loss"`
+	MaxOpenPositions int     `yaml:"max_open_positions"`
+	MaxOrderValue    float64 `yaml:"max_order_value"`
+	MaxLotsPerTrade  int     `yaml:"max_lots_per_trade"`
 }
 
 // StrategyCfg is the declarative config for one strategy instance.

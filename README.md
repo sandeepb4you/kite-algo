@@ -566,6 +566,78 @@ is, because they have different fixes:
 
 ---
 
+## Mixed routing: real manual trading, simulated strategies
+
+The platform runs **two books at once**. Orders typed by hand go to the
+exchange; every strategy stays on the paper broker. That is the shape you want
+while a strategy is still being evaluated — real discretionary trading,
+simulated automation, one screen.
+
+The rule lives in one function (`engine.bookFor`). Reaching the exchange takes
+**three independent conditions, all required**:
+
+```
+1. the order is manual        (StrategyID == "manual")
+2. live routing is armed      (a live broker is installed)
+3. the order asked for it     (req.Book == BookReal)
+   -> live broker
+
+anything else -> paper broker
+```
+
+Condition 3 matters as much as the others: **"manual" and "real" are not the
+same thing.** With strategies still on paper you will want to place the odd
+manual order into the *simulated* book too — same screen, same ticket — and
+routing every manual order live the moment live was armed would make that
+impossible. So the order ticket grows a route picker when live is armed. It
+defaults to PAPER and is re-rendered per page load, so a real order is a
+deliberate click every single time, and forgetting to choose gives you a
+simulated order rather than a real one.
+
+The picker drives the submit label and the confirmation dialog in CSS, so the
+button cannot say "real" while paper is selected. The confirm is conditional
+(`data-confirm-when="route=real"`) — prompting on simulated orders too would
+train you to dismiss it reflexively, which is the habit you least want on the
+one submission that moves money.
+
+**There is no "all live" mode and no per-strategy live flag.** Routing a
+strategy to the exchange would have to be a code change to that function,
+reviewed and deployed — not a config value or a checkbox somebody can mis-click
+at 09:15. A strategy cannot reach the exchange even if its request explicitly
+asks for the real book; there is a test for exactly that. If the live broker is
+absent for any reason, manual orders fall back to paper: a missed trade is
+recoverable, an unauthorised real one is not.
+
+**Transitioning to fully automated trading** is a change to condition 1 in
+`bookFor` — nothing else in the routing, risk, position or display layers needs
+to move, because they are all already book-aware. That is the intended path:
+one reviewed edit in one function, rather than a flag that could be flipped by
+accident before you are ready.
+
+Live routing still requires all three existing gates — `mode: live`,
+`live_confirm: true`, and typing `I UNDERSTAND` plus your password in the UI.
+What changed is what confirming *does*: it installs a live broker for manual
+orders rather than swapping the engine's broker wholesale.
+
+**Risk is evaluated per book.** Two `risk.Manager` instances, two P&L totals.
+A strategy exhausting its daily-loss allowance blocks strategies and leaves your
+real manual trading alone; a real-money loss blocks manual orders and lets the
+strategies keep being evaluated. Configure the simulated side under
+`risk.paper` — unset fields inherit the real limits, because an unset field
+becoming "no limit" would silently remove a guardrail. The operator kill switch
+remains global, which is what a kill switch means.
+
+**Positions are shown as two sections, real first**, each with its own P&L
+total, and `positions.book` is part of the table's primary key so a simulated
+position can never overwrite a real one in the same symbol. A single blended
+list with a per-row badge was the alternative and was rejected: a badge is easy
+to skip while scanning, and mistaking a simulated position for a real one is the
+one misreading here that costs actual money. The live banner names both halves
+for the same reason — "LIVE TRADING" alone would imply the running strategies
+are live too.
+
+---
+
 ## Trade history and period performance — `/history`
 
 Realised round trips, paired **FIFO** out of the `fills` table by

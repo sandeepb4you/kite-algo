@@ -321,11 +321,21 @@ func TestLiveTicketStillConfirms(t *testing.T) {
 	if !strings.Contains(body, "data-confirm=") {
 		t.Error("the live ticket carries no confirmation; a double click would send unchecked")
 	}
-	if !strings.Contains(body, "LIVE ORDER") {
-		t.Error("the live confirmation does not say it is a live order")
+	if !strings.Contains(body, "REAL ORDER") {
+		t.Error("the confirmation does not say the order is real money")
 	}
-	if !strings.Contains(body, "PLACE LIVE ORDER") {
-		t.Error("the submit button does not read as live")
+	// The prompt must be conditional on the route. Confirming simulated orders
+	// too would train the operator to dismiss it reflexively — exactly the
+	// habit you do not want on the submission that moves real money.
+	if !strings.Contains(body, `data-confirm-when="route=real"`) {
+		t.Error("the confirmation is unconditional; it would fire on paper orders too")
+	}
+	// The route picker must default to paper.
+	if !strings.Contains(body, `value="paper" checked`) {
+		t.Error("the route picker does not default to paper; forgetting to choose would send real money")
+	}
+	if !strings.Contains(body, "PLACE REAL ORDER") || !strings.Contains(body, "Place PAPER order") {
+		t.Error("the submit button does not offer both labels; it must track the route picker")
 	}
 }
 
@@ -473,8 +483,17 @@ func TestLiveAndHaltChromeRender(t *testing.T) {
 				t.Fatalf("render dashboard in %s state: %v", name, err)
 			}
 			body := w.Body.String()
-			if st.LiveActive && !strings.Contains(body, "LIVE TRADING") {
-				t.Error("live session did not render the LIVE banner")
+			if st.LiveActive {
+				// The banner must name BOTH halves of mixed routing. "LIVE"
+				// alone would imply the running strategies are live too, and an
+				// operator who believes that misjudges every position on screen.
+				if !strings.Contains(body, "LIVE") || !strings.Contains(body, "REAL MONEY") {
+					t.Error("live session did not render the LIVE banner")
+				}
+				if !strings.Contains(body, "strategies remain simulated") {
+					t.Error("live banner did not say strategies stay simulated; " +
+						"an operator could read it as everything being live")
+				}
 			}
 			if st.Halt.Halted && !strings.Contains(body, "TRADING HALTED") {
 				t.Error("halted session did not render the halt banner")

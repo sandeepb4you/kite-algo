@@ -1,4 +1,34 @@
-{{define "positions_fragment.html"}}{{template "positions_table" (posview .Data.Positions .CSRF)}}{{end}}
+{{/* Real and simulated positions are rendered as SEPARATE sections, real
+     first, each with its own P&L total.
+
+     Manual orders can route to the exchange while strategies stay simulated, so
+     both kinds exist at once. A single blended list with a per-row badge was the
+     alternative and was rejected: a badge is easy to skip while scanning, and
+     mistaking a simulated position for a real one is the one misreading here
+     that costs actual money. Two headed blocks make it unmissable. */}}
+{{define "positions_fragment.html"}}
+{{template "positions_book" (realpos .Data.Positions .CSRF)}}
+{{template "positions_book" (paperpos .Data.Positions .CSRF)}}
+{{if and (not (realpos .Data.Positions .CSRF).Positions) (not (paperpos .Data.Positions .CSRF).Positions)}}
+  <p class="muted small">No open positions.</p>
+{{end}}
+{{end}}
+
+
+{{/* One book's section: heading, its own total, then the shared table. */}}
+{{define "positions_book"}}
+{{if .Positions}}
+<div class="book book-{{.Book}}">
+  <div class="book-head">
+    <span class="book-tag book-tag-{{.Book}}">
+      {{if .Book.IsReal}}REAL — exchange{{else}}PAPER — simulated{{end}}
+    </span>
+    <span class="book-total {{pnlClass .Total}}">{{signed .Total}}</span>
+  </div>
+  {{template "positions_table" .}}
+</div>
+{{end}}
+{{end}}
 
 
 {{/* Four columns, not seven.

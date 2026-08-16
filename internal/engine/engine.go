@@ -37,6 +37,10 @@ type Engine struct {
 	paperBroker *broker.PaperBroker // non-nil only in paper mode
 	store       storage.Store
 	risk        *risk.Manager
+	// paperRisk applies to the simulated book. Separate limits, because a
+	// simulated blow-up should halt the strategies and leave real manual
+	// trading alone. Nil falls back to the real manager's limits.
+	paperRisk   *risk.Manager
 	instruments *kite.Instruments
 	ticker      *kite.Ticker
 	logger      *slog.Logger
@@ -72,7 +76,11 @@ type Engine struct {
 	// idempotent instead of compounding unrealized P&L into itself.
 	rawPositions []broker.Position
 	positions    []broker.Position // rawPositions marked to the latest prices
-	dayPnL       float64           // sum of the marked positions
+	dayPnL       float64           // sum of the marked positions, both books
+	// realPnL and paperPnL split that sum, so the daily-loss limit that guards
+	// real capital is never tripped by a simulated loss.
+	realPnL  float64
+	paperPnL float64
 	// lastPnLPublish throttles tick-driven P&L updates.
 	lastPnLPublish time.Time
 
@@ -95,6 +103,12 @@ type Engine struct {
 	cmu          sync.RWMutex
 	tickerCancel context.CancelFunc
 	runCtx       context.Context
+	// liveBroker routes MANUAL orders to the exchange while strategies stay on
+	// the paper broker. Nil until an operator explicitly confirms live routing.
+	liveBroker broker.Broker
+	// orderBooks remembers which broker each order went to, so a cancel reaches
+	// the one that actually holds it.
+	orderBooks *orderBooks
 
 	// wanted is every symbol anyone has asked to stream, whether or not a
 	// ticker existed at the time. Subscribe requests made before login (by
@@ -175,6 +189,7 @@ func New(b broker.Broker, store storage.Store, r *risk.Manager, recordTicks bool
 		refreshNow:  make(chan struct{}, 1),
 		costModel:   charges.DefaultNSEOptions(),
 		pub:         events.Nop{},
+		orderBooks:  newOrderBooks(),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -512,11 +527,15 @@ func (e *Engine) PlaceOrder(ctx context.Context, req broker.OrderRequest) (*brok
 // operator holding a position they explicitly asked to close.
 func (e *Engine) placeOrderInternal(ctx context.Context, req broker.OrderRequest) (*broker.Order, error) {
 	lotSize := e.LotSize(req.TradingSymbol)
-	openPositions := e.snapshotPositionCount(req.TradingSymbol)
-	dayPnL := e.snapshotDayPnL()
+	// Risk is evaluated per book. A strategy losing simulated money must not
+	// consume the exposure allowance or trip the daily-loss halt that exists to
+	// protect real capital, and vice versa — the two are different money.
+	book := e.bookFor(req)
+	openPositions := e.snapshotBookPositionCount(book)
+	dayPnL := e.snapshotBookPnL(book)
 	openingNew := openPositions == 0 || !e.hasPosition(req.TradingSymbol)
 
-	if err := e.risk.Check(ctx, req, lotSize, openPositions, dayPnL, openingNew); err != nil {
+	if err := e.riskFor(book).Check(ctx, req, lotSize, openPositions, dayPnL, openingNew); err != nil {
 		if e.logger != nil {
 			e.logger.Warn("order rejected by risk",
 				"symbol", req.TradingSymbol, "side", req.Side, "err", err)
@@ -539,7 +558,8 @@ func (e *Engine) placeOrderInternal(ctx context.Context, req broker.OrderRequest
 		return nil, err
 	}
 
-	o, err := e.currentBroker().PlaceOrder(ctx, req)
+	router, book := e.brokerFor(req)
+	o, err := router.PlaceOrder(ctx, req)
 	if err != nil {
 		e.pub.Publish(events.Event{
 			Kind:       events.KindOrderRejected,
@@ -551,8 +571,13 @@ func (e *Engine) placeOrderInternal(ctx context.Context, req broker.OrderRequest
 		})
 		return nil, err
 	}
-	// Remember which strategy owns this order so fills route correctly.
+	// Remember which strategy owns this order so fills route correctly, and
+	// which book it went to so a later cancel reaches the right broker.
 	e.orderStrategy.Store(e.orderKey(o), req.StrategyID)
+	e.orderBooks.set(o.ID, book)
+	if o.ExchangeOrderID != "" {
+		e.orderBooks.set(o.ExchangeOrderID, book)
+	}
 	e.countOrder(req.StrategyID)
 
 	if err := e.store.SaveOrder(ctx, o); err != nil && e.logger != nil {
@@ -569,7 +594,7 @@ func (e *Engine) placeOrderInternal(ctx context.Context, req broker.OrderRequest
 
 // CancelOrder cancels a previously placed order.
 func (e *Engine) CancelOrder(ctx context.Context, orderID string) error {
-	return e.currentBroker().CancelOrder(ctx, orderID)
+	return e.brokerForOrder(orderID).CancelOrder(ctx, orderID)
 }
 
 // Now returns wall-clock time. Strategies call this instead of time.Now() so a
@@ -950,7 +975,7 @@ func (e *Engine) markPositionsToMarket(force bool) {
 	e.mu.Lock()
 	if len(e.rawPositions) == 0 {
 		e.positions = nil
-		e.dayPnL = 0
+		e.dayPnL, e.realPnL, e.paperPnL = 0, 0, 0
 		e.mu.Unlock()
 		return
 	}
@@ -958,16 +983,26 @@ func (e *Engine) markPositionsToMarket(force bool) {
 	marked := make([]broker.Position, len(e.rawPositions))
 	copy(marked, e.rawPositions)
 
-	var dayPnL float64
+	// P&L is accumulated per book as well as in total. The books hold different
+	// kinds of money: a simulated loss must never trip the limit that guards
+	// real capital, and a blended figure is neither number.
+	var dayPnL, realPnL, paperPnL float64
 	for i := range marked {
 		if last, ok := e.prices[marked[i].TradingSymbol]; ok && last > 0 {
 			marked[i].LastPrice = last
 			marked[i].PnL = positionPnL(marked[i], last)
 		}
 		dayPnL += marked[i].PnL
+		if marked[i].Book.IsReal() {
+			realPnL += marked[i].PnL
+		} else {
+			paperPnL += marked[i].PnL
+		}
 	}
 	e.positions = marked
 	e.dayPnL = dayPnL
+	e.realPnL = realPnL
+	e.paperPnL = paperPnL
 
 	due := force || time.Since(e.lastPnLPublish) >= pnlPublishInterval
 	if due {
@@ -1139,13 +1174,20 @@ func (e *Engine) reconcileLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			e.cmu.RLock()
-			br := e.broker
-			e.cmu.RUnlock()
-			if br == nil || br.Mode() != "live" {
-				continue
+			// Poll whichever broker actually holds real orders. Under mixed
+			// routing e.broker is still the PAPER broker while manual orders go
+			// live, so checking e.broker.Mode() would skip reconciliation
+			// entirely and leave real fills unseen.
+			br := e.liveBrokerOrNil()
+			if br == nil {
+				e.cmu.RLock()
+				br = e.broker
+				e.cmu.RUnlock()
+				if br == nil || br.Mode() != "live" {
+					continue
+				}
 			}
-			e.reconcileLiveOrders(ctx)
+			e.reconcileLiveOrders(ctx, br)
 		}
 	}
 }
@@ -1153,11 +1195,27 @@ func (e *Engine) reconcileLoop(ctx context.Context) {
 // refreshPositions fetches current positions, caches them, and persists them so
 // the daily-loss check has fresh data.
 func (e *Engine) refreshPositions(ctx context.Context) {
-	positions, err := e.currentBroker().GetPositions(ctx)
-	if err != nil {
-		if e.logger != nil {
-			e.logger.Debug("refresh positions failed", "err", err)
+	// Both books, tagged. With manual orders live and strategies simulated,
+	// positions exist in two brokers at once and neither list is the whole
+	// picture. A failure on one book must not discard the other's positions,
+	// so each is collected independently.
+	var positions []broker.Position
+	var failed int
+	for _, src := range e.booksInUse() {
+		got, err := src.Broker.GetPositions(ctx)
+		if err != nil {
+			failed++
+			if e.logger != nil {
+				e.logger.Debug("refresh positions failed", "book", src.Book, "err", err)
+			}
+			continue
 		}
+		for i := range got {
+			got[i].Book = src.Book
+		}
+		positions = append(positions, got...)
+	}
+	if failed > 0 && len(positions) == 0 {
 		return
 	}
 	// Keep the broker's figures as the REALIZED baseline, untouched.
@@ -1179,8 +1237,11 @@ func (e *Engine) refreshPositions(ctx context.Context) {
 }
 
 // reconcileLiveOrders diffs the order book against seen fills.
-func (e *Engine) reconcileLiveOrders(ctx context.Context) {
-	orders, err := e.currentBroker().GetOpenOrders(ctx)
+func (e *Engine) reconcileLiveOrders(ctx context.Context, br broker.Broker) {
+	if br == nil {
+		return
+	}
+	orders, err := br.GetOpenOrders(ctx)
 	if err != nil || len(orders) == 0 {
 		return
 	}
@@ -1213,6 +1274,10 @@ func (e *Engine) persistPaperPositions() {
 	prices := e.prices
 	e.mu.RUnlock()
 	for i := range positions {
+		// Tag the book before persisting, or a simulated position lands in
+		// storage indistinguishable from a real one and every downstream total
+		// blends the two.
+		positions[i].Book = broker.BookPaper
 		if last, ok := prices[positions[i].TradingSymbol]; ok && last > 0 {
 			positions[i].LastPrice = last
 			positions[i].PnL = positionPnL(positions[i], last)
@@ -1221,24 +1286,39 @@ func (e *Engine) persistPaperPositions() {
 	}
 }
 
-// snapshotPositionCount returns the number of currently OPEN (non-flat) positions.
-func (e *Engine) snapshotPositionCount(symbol string) int {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	n := 0
-	for _, p := range e.positions {
-		if p.NetQuantity != 0 {
-			n++
-		}
-	}
-	return n
-}
-
 // snapshotDayPnL returns the cached day PnL.
 func (e *Engine) snapshotDayPnL() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.dayPnL
+}
+
+// snapshotBookPnL returns the day's P&L for one book.
+func (e *Engine) snapshotBookPnL(b broker.Book) float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if b.IsReal() {
+		return e.realPnL
+	}
+	return e.paperPnL
+}
+
+// BookPnL reports the day's P&L for one book, for the UI.
+func (e *Engine) BookPnL(b broker.Book) float64 { return e.snapshotBookPnL(b) }
+
+// snapshotBookPositionCount counts open positions in one book, so the
+// max-open-positions limit is applied per book rather than letting simulated
+// positions consume the allowance that guards real exposure.
+func (e *Engine) snapshotBookPositionCount(b broker.Book) int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	n := 0
+	for _, p := range e.positions {
+		if p.NetQuantity != 0 && p.Book.IsReal() == b.IsReal() {
+			n++
+		}
+	}
+	return n
 }
 
 // hasPosition reports whether there's an open (non-flat) position in symbol.

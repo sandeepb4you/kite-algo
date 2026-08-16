@@ -23,6 +23,32 @@ func configuredRiskLimits(cfg *config.Config) risk.Limits {
 	}
 }
 
+// configuredPaperRiskLimits resolves the simulated book's limits.
+//
+// Each field falls back to the real limit when unset, so an operator who only
+// wants a looser daily-loss allowance for strategies sets that one line and
+// inherits the rest. Inheriting is the safe default: an unset field becoming
+// "no limit" would silently remove a guardrail.
+func configuredPaperRiskLimits(cfg *config.Config) risk.Limits {
+	real := configuredRiskLimits(cfg)
+	p := cfg.Risk.Paper
+
+	out := real
+	if p.MaxDailyLoss > 0 {
+		out.MaxDailyLoss = p.MaxDailyLoss
+	}
+	if p.MaxOpenPositions > 0 {
+		out.MaxOpenPositions = p.MaxOpenPositions
+	}
+	if p.MaxOrderValue > 0 {
+		out.MaxOrderValue = p.MaxOrderValue
+	}
+	if p.MaxLotsPerTrade > 0 {
+		out.MaxLotsPerTrade = p.MaxLotsPerTrade
+	}
+	return out
+}
+
 // loadRiskLimits resolves the limits to start with: the configured defaults,
 // overridden by anything the operator saved.
 //

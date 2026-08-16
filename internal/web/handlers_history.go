@@ -83,7 +83,7 @@ func (s *Server) fillHistory(r *http.Request, d *historyData) error {
 		return fmt.Errorf("this storage backend cannot serve trade history")
 	}
 
-	first, last, haveAny, err := store.FillsSpan(r.Context())
+	first, last, haveAny, err := store.ActivitySpan(r.Context())
 	if err != nil {
 		return err
 	}
@@ -96,17 +96,15 @@ func (s *Server) fillHistory(r *http.Request, d *historyData) error {
 	// Default the window to where the data actually is. A last-30-days default
 	// would open empty for anyone whose trading predates it, which reads as
 	// "there is no history" rather than "you are looking at the wrong month".
-	if d.From == "" || d.To == "" {
-		if !haveAny {
-			d.Notice = "No fills have been recorded yet. Trades appear here once a strategy or a manual order fills."
-			return nil
-		}
-		if d.From == "" {
-			d.From = d.SpanFirst
-		}
-		if d.To == "" {
-			d.To = d.SpanLast
-		}
+	if !haveAny {
+		d.Notice = "Nothing recorded yet. Orders and trades appear here once a strategy or a manual order runs."
+		return nil
+	}
+	if d.From == "" {
+		d.From = d.SpanFirst
+	}
+	if d.To == "" {
+		d.To = d.SpanLast
 	}
 
 	from, err := time.ParseInLocation("2006-01-02", d.From, history.IST)
@@ -138,7 +136,12 @@ func (s *Server) fillHistory(r *http.Request, d *historyData) error {
 		fills = kept
 	}
 	if len(fills) == 0 {
-		d.Notice = fmt.Sprintf("No fills between %s and %s.", d.From, d.To)
+		// Still load the orders: a window with no fills but plenty of orders is
+		// the most informative case there is — every one of them was rejected,
+		// cancelled, or is still pending, and the order log says which.
+		d.Notice = fmt.Sprintf(
+			"No fills between %s and %s, so there are no round trips to measure. "+
+				"The order log below shows what was submitted.", d.From, d.To)
 		return s.loadHistoryOrders(r, store, d, from, to)
 	}
 

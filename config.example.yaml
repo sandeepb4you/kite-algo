@@ -116,7 +116,13 @@ risk:
   max_daily_loss: 5000          # rupees: halt NEW entries when day PnL <= -this
   max_open_positions: 5         # distinct open symbols
   max_order_value: 100000       # rupees per single order (qty * price)
-  max_lots_per_trade: 1         # lots per order (1 lot NIFTY = 75, check current)
+  max_lots_per_trade: 1
+  # Limits for the SIMULATED book, which runs alongside the real one: manual
+  # orders can be routed to the exchange while every strategy stays on paper.
+  # Unset fields inherit the real limits above.
+  paper:
+    max_daily_loss: 25000
+    max_lots_per_trade: 10         # lots per order (1 lot NIFTY = 75, check current)
 
 # Strategy default parameters.
 #

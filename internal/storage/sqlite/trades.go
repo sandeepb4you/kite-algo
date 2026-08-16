@@ -38,12 +38,20 @@ func (s *Store) Fills(ctx context.Context, from, to time.Time) ([]broker.Fill, e
 	return out, rows.Err()
 }
 
-// FillsSpan reports the oldest and newest stored fill timestamps.
-func (s *Store) FillsSpan(ctx context.Context) (first, last time.Time, ok bool, err error) {
+// ActivitySpan reports the oldest and newest timestamps across fills and orders.
+func (s *Store) ActivitySpan(ctx context.Context) (first, last time.Time, ok bool, err error) {
+	// Both tables, because an account whose orders were all rejected has real
+	// history and no fills at all. Timestamps are RFC3339Nano strings and sort
+	// lexically in the same order they sort chronologically, so MIN/MAX over
+	// the union is correct without parsing.
 	var lo, hi sql.NullString
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT MIN(timestamp), MAX(timestamp) FROM fills`).Scan(&lo, &hi); err != nil {
-		return time.Time{}, time.Time{}, false, fmt.Errorf("query fill span: %w", err)
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT MIN(ts), MAX(ts) FROM (
+			SELECT timestamp  AS ts FROM fills
+			UNION ALL
+			SELECT created_at AS ts FROM orders
+		)`).Scan(&lo, &hi); err != nil {
+		return time.Time{}, time.Time{}, false, fmt.Errorf("query activity span: %w", err)
 	}
 	if !lo.Valid || !hi.Valid {
 		return time.Time{}, time.Time{}, false, nil

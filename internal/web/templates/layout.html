@@ -25,8 +25,12 @@
 {{/* The mode band is the single most important piece of chrome on the page:
      it must be impossible to mistake simulated trading for real trading. */}}
 {{if .Status.LiveActive}}
+  {{/* Manual-live is the normal live state now: hand-typed orders reach the
+       exchange, strategies stay simulated. Spelling out BOTH halves matters —
+       "LIVE TRADING" alone would imply the running strategies are live too, and
+       an operator who believes that will misjudge every position on screen. */}}
   <div class="modeband modeband-live">
-    ⚠ LIVE TRADING — REAL MONEY
+    ⚠ LIVE — MANUAL ORDERS ARE REAL MONEY · strategies remain simulated
     {{if .Status.Kite.UserID}}· {{.Status.Kite.UserID}}{{end}}
   </div>
 {{else if .Status.LiveArmed}}

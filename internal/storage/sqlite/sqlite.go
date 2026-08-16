@@ -133,20 +133,25 @@ func (s *Store) SaveFill(ctx context.Context, f *broker.Fill) error {
 	return nil
 }
 
-// UpsertPosition inserts or updates a position keyed by strategy+symbol+product.
+// UpsertPosition inserts or updates a position keyed by
+// strategy+symbol+product+book.
+//
+// The book is part of the key because the same instrument can be held in both
+// at once — manual orders route to the exchange while strategies stay
+// simulated. Keying without it lets a paper position overwrite a real one.
 func (s *Store) UpsertPosition(ctx context.Context, p *broker.Position) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO positions (
-			strategy_id, exchange, trading_symbol, product,
+			strategy_id, exchange, trading_symbol, product, book,
 			net_quantity, average_price, last_price, pnl, updated
-		) VALUES (?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(strategy_id, trading_symbol, product) DO UPDATE SET
+		) VALUES (?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(strategy_id, trading_symbol, product, book) DO UPDATE SET
 			net_quantity=excluded.net_quantity,
 			average_price=excluded.average_price,
 			last_price=excluded.last_price,
 			pnl=excluded.pnl,
 			updated=excluded.updated`,
-		p.StrategyID, p.Exchange, p.TradingSymbol, string(p.Product),
+		p.StrategyID, p.Exchange, p.TradingSymbol, string(p.Product), p.Book.String(),
 		p.NetQuantity, p.AveragePrice, p.LastPrice, p.PnL,
 		p.Updated.Format(time.RFC3339Nano),
 	)
@@ -159,7 +164,7 @@ func (s *Store) UpsertPosition(ctx context.Context, p *broker.Position) error {
 // GetOpenPositions returns all non-flat positions.
 func (s *Store) GetOpenPositions(ctx context.Context) ([]broker.Position, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT strategy_id, exchange, trading_symbol, product,
+		SELECT strategy_id, exchange, trading_symbol, product, book,
 		       net_quantity, average_price, last_price, pnl, updated
 		FROM positions WHERE net_quantity != 0`)
 	if err != nil {
@@ -171,14 +176,15 @@ func (s *Store) GetOpenPositions(ctx context.Context) ([]broker.Position, error)
 	for rows.Next() {
 		var p broker.Position
 		var updated string
-		var product string
+		var product, book string
 		if err := rows.Scan(
-			&p.StrategyID, &p.Exchange, &p.TradingSymbol, &product,
+			&p.StrategyID, &p.Exchange, &p.TradingSymbol, &product, &book,
 			&p.NetQuantity, &p.AveragePrice, &p.LastPrice, &p.PnL, &updated,
 		); err != nil {
 			return nil, fmt.Errorf("scan position: %w", err)
 		}
 		p.Product = broker.ProductType(product)
+		p.Book = broker.Book(book)
 		p.Updated, _ = time.Parse(time.RFC3339Nano, updated)
 		out = append(out, p)
 	}
@@ -237,6 +243,25 @@ func (s *Store) GetDayPnL(ctx context.Context) (float64, error) {
 		WHERE date(updated) = date('now')`)
 	if err := row.Scan(&sum); err != nil {
 		return 0, fmt.Errorf("query day pnl: %w", err)
+	}
+	if !sum.Valid {
+		return 0, nil
+	}
+	return sum.Float64, nil
+}
+
+// GetDayPnLByBook is GetDayPnL for one book.
+//
+// The books are summed separately because they hold different kinds of money.
+// A blended total would let a simulated loss trip the limit that guards real
+// capital, and would report a figure that is neither one thing nor the other.
+func (s *Store) GetDayPnLByBook(ctx context.Context, book broker.Book) (float64, error) {
+	var sum sql.NullFloat64
+	row := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(pnl), 0) FROM positions
+		WHERE date(updated) = date('now') AND book = ?`, book.String())
+	if err := row.Scan(&sum); err != nil {
+		return 0, fmt.Errorf("query day pnl for %s book: %w", book, err)
 	}
 	if !sum.Valid {
 		return 0, nil

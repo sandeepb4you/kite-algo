@@ -33,15 +33,17 @@ import (
 
 // App wires and supervises the platform.
 type App struct {
-	Cfg      *config.Config
-	Log      *slog.Logger
-	Store    storage.Store
-	Bus      *events.Bus
-	Engine   *engine.Engine
-	Risk     *risk.Manager
-	Kite     *KiteSession
-	Sessions *auth.Sessions
-	Guard    *auth.LoginGuard
+	Cfg    *config.Config
+	Log    *slog.Logger
+	Store  storage.Store
+	Bus    *events.Bus
+	Engine *engine.Engine
+	Risk   *risk.Manager
+	// PaperRisk governs the simulated book, which runs alongside the real one.
+	PaperRisk *risk.Manager
+	Kite      *KiteSession
+	Sessions  *auth.Sessions
+	Guard     *auth.LoginGuard
 
 	// paper is the simulated broker. It is ALWAYS the broker the engine starts
 	// with, including when the config says live: real order routing is only
@@ -79,11 +81,20 @@ type Status struct {
 	DayCharges charges.Breakdown `json:"day_charges"`
 	// NetPnL is DayPnL less estimated charges — the figure that decides whether
 	// a session actually made money.
-	NetPnL      float64          `json:"net_pnl"`
-	Margins     Margins          `json:"margins"`
-	RiskLimits  risk.Limits      `json:"risk_limits"`
-	Halt        engine.HaltState `json:"halt"`
-	RedirectURL string           `json:"redirect_url"`
+	NetPnL float64 `json:"net_pnl"`
+	// RealPnL and PaperPnL split DayPnL by book. Manual orders can be routed to
+	// the exchange while strategies stay simulated, and a blended figure would
+	// be neither real money nor a simulation result.
+	RealPnL  float64 `json:"real_pnl"`
+	PaperPnL float64 `json:"paper_pnl"`
+	// Route is how orders are currently routed: "all-paper" or "manual-live".
+	Route string `json:"route"`
+	// PaperRiskLimits are the simulated book's limits.
+	PaperRiskLimits risk.Limits      `json:"paper_risk_limits"`
+	Margins         Margins          `json:"margins"`
+	RiskLimits      risk.Limits      `json:"risk_limits"`
+	Halt            engine.HaltState `json:"halt"`
+	RedirectURL     string           `json:"redirect_url"`
 }
 
 // New builds the platform without touching the network.
@@ -104,6 +115,10 @@ func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog
 	}
 	limits, overridden := loadRiskLimits(ctx, store, cfg, logf)
 	riskMgr := risk.NewManager(limits)
+	// The simulated book gets its own manager, so a strategy exhausting its
+	// daily-loss allowance blocks strategies and leaves real manual trading
+	// untouched.
+	paperRisk := risk.NewManager(configuredPaperRiskLimits(cfg))
 
 	if log != nil {
 		log.Info("risk limits loaded",
@@ -141,6 +156,8 @@ func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog
 		bootAt:         time.Now(),
 		riskOverridden: overridden,
 	}
+	eng.SetPaperRisk(paperRisk)
+	a.PaperRisk = paperRisk
 	a.Kite = NewKiteSession(cfg, store, eng, bus, log)
 
 	// Best-effort: pick up a token persisted earlier today.
@@ -187,18 +204,27 @@ func (a *App) Status() Status {
 	info := a.Kite.Snapshot()
 	chargesToday := a.Engine.DayCharges()
 	return Status{
-		Mode:        a.Cfg.Mode,
-		LiveArmed:   a.Cfg.Mode == config.ModeLive && !live,
-		LiveActive:  live,
-		Kite:        info,
-		Streaming:   info.Streaming,
-		BootAt:      a.bootAt,
-		Uptime:      time.Since(a.bootAt).Round(time.Second).String(),
-		DayPnL:      a.Engine.DayPnL(),
-		DayCharges:  chargesToday,
-		NetPnL:      a.Engine.DayPnL() - chargesToday.Total,
-		Margins:     a.margins.get(),
-		RiskLimits:  a.Risk.Limits(),
+		Mode:       a.Cfg.Mode,
+		LiveArmed:  a.Cfg.Mode == config.ModeLive && !live,
+		LiveActive: live,
+		Kite:       info,
+		Streaming:  info.Streaming,
+		BootAt:     a.bootAt,
+		Uptime:     time.Since(a.bootAt).Round(time.Second).String(),
+		DayPnL:     a.Engine.DayPnL(),
+		DayCharges: chargesToday,
+		NetPnL:     a.Engine.DayPnL() - chargesToday.Total,
+		RealPnL:    a.Engine.BookPnL(broker.BookReal),
+		PaperPnL:   a.Engine.BookPnL(broker.BookPaper),
+		Route:      string(a.Engine.RouteMode()),
+		Margins:    a.margins.get(),
+		RiskLimits: a.Risk.Limits(),
+		PaperRiskLimits: func() risk.Limits {
+			if a.PaperRisk != nil {
+				return a.PaperRisk.Limits()
+			}
+			return a.Risk.Limits()
+		}(),
 		Halt:        a.Engine.HaltState(),
 		RedirectURL: a.Cfg.KiteRedirectURL(),
 	}
@@ -248,16 +274,20 @@ func (a *App) ConfirmLive(ctx context.Context, phrase, password string) error {
 	a.liveMode = true
 	a.mu.Unlock()
 
-	a.Engine.SwapBroker(live)
+	// Install live routing for MANUAL orders only. The engine keeps every
+	// strategy on the paper broker; see engine.bookFor. SwapBroker is
+	// deliberately not used — that would take strategies live too.
+	a.Engine.SetLiveBroker(live)
 
 	if a.Log != nil {
-		a.Log.Warn("LIVE TRADING CONFIRMED — real orders will now be routed to the exchange")
+		a.Log.Warn("LIVE TRADING CONFIRMED for MANUAL orders — " +
+			"hand-typed orders now reach the exchange; strategies remain simulated")
 	}
 	a.Bus.Publish(events.Event{
 		Kind:    events.KindStatus,
 		Level:   events.LevelWarn,
-		Message: "LIVE trading confirmed — real orders are now active",
-		Fields:  map[string]any{"live_active": true},
+		Message: "LIVE manual trading confirmed — hand-typed orders are real; strategies stay simulated",
+		Fields:  map[string]any{"live_active": true, "route": "manual-live"},
 	})
 	return nil
 }
@@ -273,9 +303,9 @@ func (a *App) DisarmLive(ctx context.Context) {
 	a.liveMode = false
 	a.mu.Unlock()
 
-	a.Engine.SwapBroker(a.paper)
+	a.Engine.SetLiveBroker(nil)
 	if a.Log != nil {
-		a.Log.Warn("live trading disarmed; new orders are simulated again")
+		a.Log.Warn("live trading disarmed; new manual orders are simulated again")
 	}
 	a.Bus.Publish(events.Event{
 		Kind:    events.KindStatus,

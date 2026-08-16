@@ -641,3 +641,73 @@ details summary { cursor: pointer; }
 .toast-ok   { border-color: var(--up); }
 .toast-warn { border-color: var(--warn); }
 .toast-err  { border-color: var(--down); }
+
+/* --- position books ------------------------------------------------------- */
+
+/* Real and simulated positions render as separate blocks. The visual weight is
+   deliberately lopsided: the real block is bordered and coloured, the paper one
+   is muted, so a glance at the shape of the page tells you which is which
+   before you have read a single number. */
+.book { margin-bottom: 14px; }
+.book-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0 6px;
+}
+.book-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+.book-tag-real  { background: var(--live); color: #fff; }
+.book-tag-paper { background: var(--panel-2); color: var(--muted); }
+.book-total { margin-left: auto; font-family: var(--mono); font-weight: 700; }
+
+/* A left rule on the real block, so the boundary survives a fast scroll. */
+.book-real  { border-left: 3px solid var(--live); padding-left: 10px; }
+.book-paper { border-left: 3px solid var(--line); padding-left: 10px; }
+
+/* --- order route picker --------------------------------------------------- */
+
+/* Shown only when live routing is armed. The two options are styled very
+   differently on purpose: picking the real book should feel like a different
+   action, not like changing a dropdown. */
+.route {
+  margin: 10px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.route legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.route-opt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.route-opt-paper span { color: var(--muted); }
+.route-opt-real span  { color: var(--live); font-weight: 700; }
+/* Once real is selected the whole box turns, so the state is visible without
+   reading the radio. */
+.route:has(.route-opt-real input:checked) {
+  border-color: var(--live);
+  background: rgb(194 38 43 / 0.10);
+}
+
+/* Submit label follows the route picker. Pure CSS so the button text and the
+   selected route cannot disagree, which a JS handler could get wrong. */
+.lbl-real { display: none; }
+#ticket:has(.route-opt-real input:checked) .lbl-paper { display: none; }
+#ticket:has(.route-opt-real input:checked) .lbl-real  { display: inline; }

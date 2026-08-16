@@ -87,6 +87,31 @@ func (r *Renderer) Render(w http.ResponseWriter, status int, name string, data a
 type positionsView struct {
 	Positions []broker.Position
 	CSRF      string
+	// Book labels the section and decides whether it is styled as real money.
+	Book broker.Book
+	// Total is this book's P&L. Each section carries its own, because a
+	// combined figure would add real rupees to simulated ones.
+	Total float64
+}
+
+// splitByBook separates positions into the real book and the simulated one.
+//
+// Real first, and never interleaved. A badge on a blended list is easy to miss
+// while scanning, and mistaking a simulated position for a real one is the one
+// misreading here that costs actual money.
+func splitByBook(positions []broker.Position, csrf string) (real, paper positionsView) {
+	real = positionsView{CSRF: csrf, Book: broker.BookReal}
+	paper = positionsView{CSRF: csrf, Book: broker.BookPaper}
+	for _, p := range positions {
+		if p.Book.IsReal() {
+			real.Positions = append(real.Positions, p)
+			real.Total += p.PnL
+		} else {
+			paper.Positions = append(paper.Positions, p)
+			paper.Total += p.PnL
+		}
+	}
+	return real, paper
 }
 
 // funcMap holds the formatting helpers templates use. Keeping presentation
@@ -96,6 +121,16 @@ func funcMap() template.FuncMap {
 		// posview bundles positions with the CSRF token for the shared partial.
 		"posview": func(positions []broker.Position, csrf string) positionsView {
 			return positionsView{Positions: positions, CSRF: csrf}
+		},
+		// realpos / paperpos split a position list by book, so the two are
+		// rendered as separate sections with separate totals.
+		"realpos": func(positions []broker.Position, csrf string) positionsView {
+			r, _ := splitByBook(positions, csrf)
+			return r
+		},
+		"paperpos": func(positions []broker.Position, csrf string) positionsView {
+			_, p := splitByBook(positions, csrf)
+			return p
 		},
 		// money formats rupees with Indian digit grouping (12,34,567.89).
 		"money": money,

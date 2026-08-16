@@ -31,7 +31,8 @@
 <section class="card">
   <h2>Positions</h2>
   <div data-poll="/partials/positions" data-poll-ms="5000">
-    {{template "positions_table" (posview .Data.Positions .CSRF)}}
+    {{template "positions_book" (realpos .Data.Positions .CSRF)}}
+    {{template "positions_book" (paperpos .Data.Positions .CSRF)}}
   </div>
 </section>
 

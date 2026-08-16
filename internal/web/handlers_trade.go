@@ -214,6 +214,16 @@ func (s *Server) parseOrderForm(r *http.Request) (broker.OrderRequest, error) {
 		return req, fmt.Errorf("unknown lot size for %s — is the instrument master loaded?", symbol)
 	}
 
+	// The book is an explicit per-order choice, and only "real" spelled out
+	// exactly counts. Anything else — absent, misspelled, tampered with —
+	// resolves to paper. The engine re-checks this against live-armed state
+	// anyway (engine.bookFor); a form value can request the real book but can
+	// never be what grants it.
+	book := broker.BookPaper
+	if strings.EqualFold(strings.TrimSpace(r.FormValue("route")), string(broker.BookReal)) {
+		book = broker.BookReal
+	}
+
 	return broker.OrderRequest{
 		Exchange:      s.app.Engine.ExchangeFor(symbol),
 		TradingSymbol: symbol,
@@ -224,6 +234,7 @@ func (s *Server) parseOrderForm(r *http.Request) (broker.OrderRequest, error) {
 		Price:         price,
 		TriggerPrice:  trigger,
 		Validity:      broker.ValidityDay,
+		Book:          book,
 	}, nil
 }
 

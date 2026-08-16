@@ -17,7 +17,8 @@
          guarding real money. */}}
     <form id="ticket" method="post" action="/api/orders" class="ticket"
           data-result="#order-result"
-          {{if .Data.LiveMode}}data-confirm="LIVE ORDER — real money. Send it?"{{end}}>
+          {{if .Data.LiveMode}}data-confirm-when="route=real"
+          data-confirm="REAL ORDER — this sends real money to the exchange. Send it?"{{end}}>
       <input type="hidden" name="_csrf" value="{{.CSRF}}">
 
       <label for="symbol">Instrument</label>
@@ -86,8 +87,40 @@
         </div>
       </div>
 
+      {{/* Route picker, only when live routing is armed.
+
+           "Manual" and "real" are not the same thing. With strategies still
+           being evaluated on paper, an operator wants to place the occasional
+           manual order into the SIMULATED book too — same screen, same ticket.
+           Routing every manual order live the moment live was armed would make
+           that impossible.
+
+           PAPER is checked by default and the control is re-rendered on every
+           page load, so the selection never persists across orders. Sending a
+           real order is a deliberate click, every single time. */}}
+      {{if .Data.LiveMode}}
+      <fieldset class="route">
+        <legend>Route this order to</legend>
+        <label class="route-opt route-opt-paper">
+          <input type="radio" name="route" value="paper" checked>
+          <span>PAPER — simulated</span>
+        </label>
+        <label class="route-opt route-opt-real">
+          <input type="radio" name="route" value="real">
+          <span>REAL — exchange, real money</span>
+        </label>
+      </fieldset>
+      {{end}}
+
+      {{/* The label tracks the route picker, in CSS, with no JavaScript: the
+           button must never say "real" while paper is selected, or the reverse.
+           Outside live mode there is only one possibility, so it is stated
+           flatly. */}}
       <button class="btn {{if .Data.LiveMode}}btn-danger{{else}}btn-primary{{end}}" type="submit">
-        {{if .Data.LiveMode}}PLACE LIVE ORDER{{else}}Place paper order{{end}}
+        {{if .Data.LiveMode}}
+          <span class="lbl-paper">Place PAPER order</span>
+          <span class="lbl-real">PLACE REAL ORDER — LIVE</span>
+        {{else}}Place paper order{{end}}
       </button>
     </form>
 
@@ -127,7 +160,8 @@
 
     <div id="panel-positions" class="tab-panel panel-positions">
       <div data-poll="/partials/positions" data-poll-ms="5000">
-        {{template "positions_table" (posview .Data.Positions .CSRF)}}
+        {{template "positions_book" (realpos .Data.Positions .CSRF)}}
+    {{template "positions_book" (paperpos .Data.Positions .CSRF)}}
       </div>
       {{/* Outside the polled div: a refresh would otherwise wipe the button. */}}
       <form method="post" action="/api/positions/squareoff"

@@ -83,6 +83,23 @@
 
       form.addEventListener("submit", function (ev) {
         var confirmMsg = form.getAttribute("data-confirm");
+
+        // data-confirm-when="field=value" makes the prompt conditional on the
+        // form's own state. The order ticket uses it so only a REAL order asks:
+        // prompting on simulated orders too would train the operator to dismiss
+        // the dialog reflexively, which is precisely the habit you do not want
+        // on the one submission that moves real money.
+        var when = form.getAttribute("data-confirm-when");
+        if (confirmMsg && when) {
+          var eq = when.indexOf("=");
+          var field = eq < 0 ? when : when.slice(0, eq);
+          var want = eq < 0 ? "" : when.slice(eq + 1);
+          var data = new FormData(form);
+          if (String(data.get(field) || "") !== want) {
+            confirmMsg = null;
+          }
+        }
+
         if (confirmMsg && !window.confirm(confirmMsg)) {
           ev.preventDefault();
           return;

@@ -201,7 +201,42 @@ func TestHistorySaysSoWhenThereAreNoFills(t *testing.T) {
 	c := loginClient(t, ts)
 
 	body := getBody(t, c, ts.URL+"/history")
-	if !strings.Contains(body, "No fills have been recorded yet") {
+	if !strings.Contains(body, "Nothing recorded yet") {
 		t.Errorf("empty state not explained; body:\n%s", truncate(body, 700))
+	}
+}
+
+// Orders with no fills are the most informative case there is — every one was
+// rejected, cancelled or still pending. Defaulting the date window off fills
+// alone made a database holding 34 orders open completely blank.
+func TestHistoryShowsOrdersEvenWithNoFills(t *testing.T) {
+	ts, a := newTestServer(t)
+	c := loginClient(t, ts)
+
+	store := a.Store.(interface {
+		SaveOrder(context.Context, *broker.Order) error
+	})
+	at := time.Date(2026, 8, 14, 9, 20, 0, 0, history.IST)
+	if err := store.SaveOrder(context.Background(), &broker.Order{
+		ID: "only-1", StrategyID: "manual", Exchange: "NFO",
+		TradingSymbol: "NIFTY2681824350CE", Product: broker.ProductMIS,
+		OrderType: broker.OrderTypeMarket, Side: broker.SideSell, Quantity: 65,
+		Validity: broker.ValidityDay, Status: broker.StatusRejected,
+		RejectReason: "insufficient margin", Mode: "paper",
+		CreatedAt: at, UpdatedAt: at,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// No explicit date range: the default must find the orders.
+	body := getBody(t, c, ts.URL+"/history")
+	if strings.Contains(body, "Nothing recorded yet") {
+		t.Error("page reported no data on a database holding an order")
+	}
+	if !strings.Contains(body, "Order log") {
+		t.Errorf("order log missing; body:\n%s", truncate(body, 800))
+	}
+	if !strings.Contains(body, "insufficient margin") {
+		t.Errorf("reject reason missing; body:\n%s", truncate(body, 800))
 	}
 }
