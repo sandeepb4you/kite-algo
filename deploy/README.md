@@ -34,15 +34,33 @@ Then, in the provider's **cloud firewall**, allow only:
 **Port 80 is not needed and should stay closed.** There is no ACME challenge to
 serve — the certificate comes from Caddy's own CA, see step 5.
 
-Then bootstrap it, as root:
+Then bootstrap it, as root — pick the script for your distro:
 
 ```sh
-./bootstrap.sh <your-browsing-ip>      # curl -s https://api.ipify.org
+./bootstrap-rocky.sh <your-browsing-ip>   # Rocky / Alma / RHEL 9
+./bootstrap.sh       <your-browsing-ip>   # Ubuntu / Debian
+# find your IP with:  curl -s https://api.ipify.org
 ```
 
-That installs Docker and configures `ufw` as a second layer behind the cloud
-firewall. Two layers because the provider's firewall lives in a console nobody
-opens for months, while `ufw status` is in front of you on every login.
+Both install Docker and set up a host firewall as a second layer behind the
+cloud firewall — the provider's console is somewhere nobody looks for months,
+while the host firewall is in front of you on every login.
+
+> **Two RHEL-family details the Ubuntu path does not have.**
+>
+> **SELinux stays enforcing.** The compose file marks its bind mounts `:Z` so
+> Docker relabels them. Without that the container cannot read its own config
+> and fails with a permission error that never mentions SELinux. Turning
+> SELinux off would trade a real protection for five minutes of convenience on
+> a box holding broker credentials.
+>
+> **firewalld does not filter Docker-published ports.** Published ports are
+> DNAT'd through FORWARD, while firewalld zones act on INPUT — so
+> `firewall-cmd --add-port` leaves a container port open to the world while the
+> firewall looks configured. The script puts the 443 rule in the `DOCKER-USER`
+> chain instead, which Docker consults first and which survives reboots and
+> Docker restarts. SSH is an ordinary host service and is handled by the zone
+> as normal.
 
 ## 1. Prepare the files
 

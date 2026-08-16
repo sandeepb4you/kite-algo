@@ -27,9 +27,14 @@ services:
       - kite-data:/data
       # Config, read-only. live_confirm has no environment override by design,
       # so a config file is required to ever enable real trading.
-      - ./config.yaml:/etc/kite-algo/config.yaml:ro
+      # :Z relabels for SELinux. On RHEL-family hosts (Rocky, Alma, CentOS)
+      # SELinux is enforcing by default and a plain bind mount is denied inside
+      # the container — the app fails to read its own config with a permission
+      # error that says nothing about SELinux. Harmless on Debian/Ubuntu, where
+      # the label is simply ignored.
+      - ./config.yaml:/etc/kite-algo/config.yaml:ro,Z
       # Kite credentials and the web password hash, read-only.
-      - ./secrets.yaml:/secrets/secrets.yaml:ro
+      - ./secrets.yaml:/secrets/secrets.yaml:ro,Z
 
     environment:
       TRADING_SECRETS_PATH: /secrets/secrets.yaml
@@ -61,7 +66,7 @@ services:
       - "443:443"
 
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro,Z
       - caddy-data:/data      # certificates — losing this re-issues them
       - caddy-config:/config
       - caddy-logs:/var/log/caddy
