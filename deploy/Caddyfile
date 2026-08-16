@@ -1,26 +1,58 @@
+{
+	# REQUIRED for an IP-based site, and easy to miss.
+	#
+	# TLS clients do not send SNI for a bare IP address — the extension is
+	# defined to carry host NAMES — so Caddy has nothing to match the site on,
+	# serves no certificate, and aborts the handshake with an internal-error
+	# alert. The symptom is not a warning you can click past: the connection
+	# fails outright. This names the certificate to present when the client
+	# names nothing.
+	default_sni {$SITE_ADDRESS}
+}
+
 # TLS termination and the IP allowlist.
 #
-# Caddy is the only thing on the box facing the internet. The application binds
-# inside the compose network and is not published to the host, so there is no
-# path to it that does not pass through here.
+# No domain, so no Let's Encrypt: LE will not issue for a bare IP address.
+# `tls internal` makes Caddy its own certificate authority and issue for the IP
+# instead.
+#
+# That is NOT the same as a throwaway self-signed cert. Caddy's local CA has a
+# stable root you can install once on your laptop and phone, after which this
+# site is a normal padlocked HTTPS site with no warning. Getting rid of the
+# warning matters: a UI that trains you to click through a browser security
+# prompt every session is a UI that has taught you to ignore the one that turns
+# out to be real.
+#
+# Because there is no ACME, port 80 is never needed and is not published at all.
 
-{$SITE_ADDRESS} {
-	# Allowlist. remote_ip matches the real TCP peer — Caddy is the edge, so no
-	# trusted_proxies clause is wanted here; adding one would let a client
-	# spoof its own address through X-Forwarded-For.
+https://{$SITE_ADDRESS} {
+	# internal: Caddy is its own CA, since Let's Encrypt will not issue for an IP.
+	#
+	# default_sni is REQUIRED here and is easy to miss. TLS clients do not send
+	# SNI for a bare IP address — the extension is defined to carry host NAMES —
+	# so with SNI alone Caddy has nothing to match the site on, serves no
+	# certificate, and aborts the handshake with an internal-error alert. The
+	# symptom is not a browser warning you can click past: the connection fails
+	# outright. This tells Caddy which certificate to present when the client
+	# names nothing.
+	tls internal
+
+	# Allowlist at the application layer, behind the cloud firewall. remote_ip
+	# matches the real TCP peer — Caddy is the edge here, so no trusted_proxies
+	# clause is wanted; adding one would let a client spoof its own address
+	# through X-Forwarded-For.
 	@allowed remote_ip {$ALLOWED_IPS}
 
 	handle @allowed {
 		# Caddy APPENDS the real client IP to X-Forwarded-For, so the right-most
-		# entry is trustworthy. The application reads exactly that one (see
-		# Server.clientIP) and only when web.trust_proxy is true, which is why
-		# that must be set in config.yaml — without it every request looks like
-		# it came from Caddy and the login lockout becomes global instead of
+		# entry is trustworthy. The application reads exactly that one, and only
+		# when web.trust_proxy is true — which is why that must be set, or the
+		# login lockout keys off Caddy's address and becomes global instead of
 		# per-attacker.
 		reverse_proxy app:8080
 	}
 
-	# Anything else gets a flat refusal with no hint that a login page exists.
+	# Anything else gets a flat refusal that does not hint a login page exists.
 	handle {
 		respond "Not found" 404
 	}

@@ -1,7 +1,11 @@
 # Deploying kite-algo with Docker
 
-Single box, single container, TLS and an IP allowlist in front. Everything here
-assumes you already have a box with Docker and a domain you can point at it.
+Single box, single container, TLS and an IP allowlist in front. Written against
+an Utho cloud server, but nothing here is provider-specific beyond "an Ubuntu VM
+with a public IP".
+
+This build runs **without a domain**, on the server's IP, with a certificate
+from Caddy's own CA.
 
 > **One instance. Always.** The database is SQLite: one file, one writer. A
 > second container mounting the same volume corrupts it, and the corruption is
@@ -10,10 +14,40 @@ assumes you already have a box with Docker and a domain you can point at it.
 
 ---
 
+## 0. The server (Utho or any other provider)
+
+Create an **Ubuntu 22.04/24.04 cloud server**. Anything with 2 GB RAM and 40 GB
+of disk is ample — this is one Go process and a SQLite file.
+
+Pick a **region in India**. Every order and every historical request goes to
+Zerodha's servers in India, and the WebSocket tick feed is latency-sensitive in
+a way a backtest is not. A server in Mumbai and one in Frankfurt are not the
+same product.
+
+Then, in the provider's **cloud firewall**, allow only:
+
+| Port | From | Why |
+|---|---|---|
+| 22/tcp | your IP | SSH |
+| 443/tcp | your IP | the trading UI |
+
+**Port 80 is not needed and should stay closed.** There is no ACME challenge to
+serve — the certificate comes from Caddy's own CA, see step 5.
+
+Then bootstrap it, as root:
+
+```sh
+./bootstrap.sh <your-browsing-ip>      # curl -s https://api.ipify.org
+```
+
+That installs Docker and configures `ufw` as a second layer behind the cloud
+firewall. Two layers because the provider's firewall lives in a console nobody
+opens for months, while `ufw status` is in front of you on every login.
+
 ## 1. Prepare the files
 
 ```sh
-cd deploy
+cd /opt/kite-algo/deploy
 cp .env.example        .env
 cp config.example.yaml config.yaml
 ```
@@ -21,76 +55,78 @@ cp config.example.yaml config.yaml
 Edit `.env`:
 
 ```ini
-SITE_ADDRESS=kite.yourdomain.com
-ALLOWED_IPS=203.0.113.42            # space separated; CIDR ok
+SITE_ADDRESS=203.0.113.10           # the server's public IP, no scheme
+ALLOWED_IPS=27.7.11.10              # where you browse from; CIDR ok
 ```
 
-Edit `config.yaml` — the three lines that must agree with each other:
+Edit `config.yaml` — the settings that must agree:
 
 | Setting | Value |
 |---|---|
-| `web.public_url` | `https://kite.yourdomain.com` — same host as `SITE_ADDRESS` |
-| `web.addr` | `0.0.0.0:8080` — inside the container only; not published to the host |
+| `web.public_url` | `https://203.0.113.10` — the same IP, with the scheme |
+| `web.addr` | `0.0.0.0:8080` — inside the container only, never published |
 | `web.trust_proxy` | `true` — Caddy is in front |
 
-`trust_proxy` is not optional here. The login lockout and the live-arming
-lockout both key off the client address; without it every request appears to
-come from Caddy and the throttle becomes global instead of per-attacker.
+`trust_proxy` is not optional. The login lockout and the live-arming lockout key
+off the client address; without it every request looks like it came from Caddy
+and the throttle becomes global instead of per-attacker.
 
-## 2. Create the secrets file
+## 2. Secrets
 
 ```sh
 cp ../secrets.example.yaml secrets.yaml
-$EDITOR secrets.yaml          # api_key + api_secret
+$EDITOR secrets.yaml            # api_key + api_secret
 chmod 600 secrets.yaml
+
+docker compose run --rm -it   -v "$PWD/secrets.yaml:/secrets/secrets.yaml" app -set-password
 ```
 
-Then set the operator password. It is an interactive prompt, so it needs a TTY:
-
-```sh
-docker compose run --rm -it \
-  -v "$PWD/secrets.yaml:/secrets/secrets.yaml" \
-  app -set-password
-```
-
-The application **refuses to start** on a non-loopback address with no password
-set, so there is no way to skip this by accident.
+The app **refuses to start** on a non-loopback address with no password, so this
+cannot be skipped by accident.
 
 ## 3. Register the redirect URL with Zerodha
 
-In <https://developers.kiteconnect.com/apps>, set your app's redirect URL to:
+At <https://developers.kiteconnect.com/apps>, set the redirect URL to:
 
 ```
-https://kite.yourdomain.com/kite/callback
+https://203.0.113.10/kite/callback
 ```
 
-Zerodha matches this **character for character** and allows no wildcards. A
-trailing slash, `http` instead of `https`, or a different subdomain all fail —
-and they fail at the end of the login round trip, which makes it look like the
-login itself is broken.
+Character for character, no wildcards.
 
-## 4. DNS, then up
+> ⚠️ **Confirm Zerodha accepts an IP-based redirect URL before you rely on this.**
+> Their console may require a hostname. If it refuses, the entire login flow is
+> blocked — no session, no trading, no capture — and the fix is a domain. A `.in`
+> domain costs a few hundred rupees a year, and a free DuckDNS subdomain works
+> too; either also gets you a real Let's Encrypt certificate and makes step 5
+> unnecessary. Worth five minutes to check first.
 
-Point an `A` record at the box **before** starting: Caddy obtains the
-certificate over HTTP-01, which needs port 80 reachable from the internet at
-that moment. The allowlist does not apply to the ACME challenge path.
+## 4. Start
 
 ```sh
 docker compose up -d --build
 docker compose logs -f app
 ```
 
-You are looking for:
+Look for `web ui listening` with the right `kite_redirect_url`.
 
+## 5. Trust the certificate (no domain, so no Let's Encrypt)
+
+Let's Encrypt will not issue for a bare IP, so Caddy is its own CA. Install its
+root once per device and the UI becomes an ordinary padlocked site:
+
+```sh
+./trust-cert.sh
 ```
-web ui listening              addr=0.0.0.0:8080 public_url=https://kite.yourdomain.com
-daily option capture scheduled run_at="15:40 IST"
-```
 
-## 5. Log in to Zerodha
+Do this rather than clicking through the warning each session. A UI that trains
+you to dismiss browser security prompts has taught you to ignore the one that
+turns out to be real — and around a money-moving interface that is the wrong
+habit to build.
 
-Open `https://kite.yourdomain.com`, sign in with the operator password, then
-**Connect** to Zerodha.
+## 6. Log in to Zerodha
+
+Open `https://203.0.113.10`, sign in with the operator password, then **Connect**.
 
 ---
 

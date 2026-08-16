@@ -54,8 +54,10 @@ services:
     depends_on:
       - app
 
+    # Only 443. There is no ACME challenge to serve because the certificate
+    # comes from Caddy's own internal CA, so port 80 is never needed and
+    # publishing it would be one more thing exposed for no reason.
     ports:
-      - "80:80"    # ACME HTTP-01 challenge and the redirect to HTTPS
       - "443:443"
 
     volumes:
