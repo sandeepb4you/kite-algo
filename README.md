@@ -388,9 +388,22 @@ See `config.example.yaml` for all options with comments. Key sections:
 - Exchange holidays are not preloaded. The calendar handles weekends
   structurally, but until holidays are configured a few empty windows get
   fetched on holiday dates — wasteful, never wrong.
-- Risk limits edited in the UI are held in memory and revert to `config.yaml` on
-  restart. A halt does not survive a restart either — a crash-restart resumes
-  with trading enabled.
+- Risk limits saved in the UI are stored in the database and **override
+  `config.yaml` from then on**, surviving restarts. Editing the file afterwards
+  appears to do nothing until you press Reset on `/risk`, which discards the
+  override. The page says which of the two is in force.
+- A halt does not survive a restart — a crash-restart resumes with trading
+  enabled. The strategies it stopped do not come back with it, since the kill
+  switch rewrites the running-instance record, so a restart after a halt leaves
+  trading enabled and nothing running.
+- Strategies started from the UI are recorded and restart with the process, but
+  only once market data is up: resuming needs the instrument master to resolve
+  open legs and a live ticker for the exits. On a fresh morning that means after
+  you log in to Zerodha.
+- A strategy holding open positions is only restored if it implements
+  `strategy.Resumable`, so it can rebuild its state instead of trading on top of
+  what it already holds. Only `shortstraddle` does today; anything else is
+  refused, and the unmanaged-positions banner says so.
 - Single broker (Kite), single account.
 - Holiday calendar not tracked (expiry/square-off assumes last Thursday).
 - The `-race` detector needs a C toolchain, which this project deliberately
