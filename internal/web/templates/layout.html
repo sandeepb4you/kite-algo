@@ -49,6 +49,13 @@
   {{template "session_alert.html" .}}
 </div>
 
+{{/* Strategy positions nobody is managing. Polled on the same cadence: this
+     appears after a restart, when the operator is somewhere other than the
+     strategies page. */}}
+<div data-poll="/partials/orphan-alert" data-poll-ms="30000">
+  {{template "orphan_alert.html" .}}
+</div>
+
 {{/* A halt is global state: it must be visible from every page, not just the
      one where it was triggered. */}}
 {{if .Status.Halt.Halted}}

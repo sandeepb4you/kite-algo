@@ -85,7 +85,10 @@ func (s *Server) handleStartStrategy(w http.ResponseWriter, r *http.Request) {
 		instanceID = typ
 	}
 
-	st, err := s.app.Engine.StartStrategy(r.Context(), engine.StrategySpec{
+	// Through the app, not the engine: the app records the instance so it comes
+	// back after a restart. Calling the engine directly starts a strategy that
+	// silently dies with the process.
+	st, err := s.app.StartStrategy(r.Context(), engine.StrategySpec{
 		InstanceID: instanceID,
 		Type:       typ,
 		Params:     raw,
@@ -119,7 +122,7 @@ func (s *Server) handleStopStrategy(w http.ResponseWriter, r *http.Request) {
 	// weigh that, and only they know which they meant.
 	squareOff := r.FormValue("square_off") == "true"
 
-	st, err := s.app.Engine.StopStrategy(r.Context(), id, engine.StopOptions{
+	st, err := s.app.StopStrategy(r.Context(), id, engine.StopOptions{
 		SquareOff: squareOff,
 		Reason:    "stopped by operator",
 	})
@@ -161,6 +164,12 @@ func (s *Server) handleHalt(w http.ResponseWriter, r *http.Request) {
 		StopStrategies: true,
 		SquareOffAll:   squareOff,
 	})
+	// Persist the now-empty running set. Without this the kill switch would be
+	// undone by the next restart: the strategies it stopped are still on record
+	// as running, so they would come straight back — which is the exact opposite
+	// of what the operator just pressed.
+	s.app.SyncRunningStrategies(r.Context())
+
 	s.log.Warn("KILL SWITCH activated from ui",
 		"square_off", squareOff, "reason", reason, "ip", s.clientIP(r))
 

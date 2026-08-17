@@ -1,0 +1,21 @@
+{{/* Strategy positions with nothing managing them.
+
+     Rendered in the sticky chrome and polled, for the same reason as the
+     session banner: the operator is rarely on the page that would otherwise
+     show it, and this condition arises from a restart — precisely when they are
+     looking somewhere else.
+
+     Wording states the consequence. "Strategy not running" is a status an
+     operator can read past; "exits are not running for these positions" is
+     not. */}}
+{{define "orphan_alert.html"}}
+{{with .Orphan}}
+{{if .Show}}
+<div class="modeband modeband-orphan">
+  ⚠ {{.Headline}}
+  {{if .Strategy}}<a href="/strategies">start it again</a>{{else}}<a href="/strategies">strategies</a>{{end}}
+  <span class="nosession-detail">{{.Detail}}</span>
+</div>
+{{end}}
+{{end}}
+{{end}}

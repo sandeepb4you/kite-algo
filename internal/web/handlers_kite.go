@@ -91,7 +91,10 @@ type pageView struct {
 	// disconnected, so a warning there could never appear, and a token that
 	// lapses mid-session leaves the operator on some other page entirely.
 	Session sessionAlert
-	Data    any
+	// Orphan warns when strategy positions are open with nothing managing them,
+	// which is what a restart leaves behind when a strategy cannot be restored.
+	Orphan orphanAlert
+	Data   any
 	// Build versions the static asset URLs so a changed stylesheet or script is
 	// never served from a stale cache.
 	Build string
@@ -112,6 +115,7 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, tmpl, title 
 		Data:    data,
 		Build:   buildID,
 		Session: s.sessionAlertFor(r),
+		Orphan:  s.orphanAlertFor(r),
 	}
 	if err := s.render.Render(w, http.StatusOK, tmpl, v); err != nil {
 		s.log.Error("render failed", "template", tmpl, "err", err)

@@ -293,6 +293,115 @@ func (s *Strategy) maybeEnter(ctx context.Context, spot float64) {
 	s.sell(ctx, pe.TradingSymbol, qty)
 }
 
+// Resume rebuilds the session state from legs this instance already holds,
+// so a restart picks up managing an open straddle instead of selling another.
+//
+// Everything reconstructed here is what maybeEnter would have set: the legs
+// map, entered, baseQty, and a subscription to each leg. What it deliberately
+// does NOT reconstruct is the entry price or the original ATM strike — nothing
+// downstream needs them. Exits key off net delta and the square-off clock, both
+// computed from live quotes and the strike stored per leg.
+//
+// The session date is stamped to today so rollSession does not immediately
+// treat these as stale. That is safe because rollSession already refuses to
+// roll while any leg is open; the pair means a straddle carried across
+// midnight stays managed rather than being forgotten at 00:00.
+func (s *Strategy) Resume(ctx context.Context, positions []broker.Position) error {
+	symbols := make([]string, 0, len(positions))
+
+	s.mu.Lock()
+	if s.legs == nil {
+		s.legs = make(map[string]leg)
+	}
+	for _, p := range positions {
+		if !p.IsOpen() {
+			continue
+		}
+
+		// Only SHORT legs are ours to manage. This strategy is only ever short
+		// its options, so a long position under this StrategyID is something
+		// else — a partial manual unwind, most likely — and adopting it would
+		// have the delta calculation working from a book that never existed.
+		if p.NetQuantity > 0 {
+			if s.logger != nil {
+				s.logger.Warn("ignoring long position on resume",
+					"symbol", p.TradingSymbol, "qty", p.NetQuantity, "strategy", s.name)
+			}
+			continue
+		}
+		qty := -p.NetQuantity
+
+		strike, typ, ok := s.legShape(p.TradingSymbol)
+		if !ok {
+			s.mu.Unlock()
+			return fmt.Errorf("cannot resolve strike/type for open position %s", p.TradingSymbol)
+		}
+
+		s.legs[p.TradingSymbol] = leg{
+			symbol: p.TradingSymbol, side: broker.SideSell,
+			strike: strike, typ: typ, qty: qty, open: true,
+		}
+		if qty > s.baseQty {
+			s.baseQty = qty
+		}
+		symbols = append(symbols, p.TradingSymbol)
+	}
+
+	restored := len(symbols)
+	if restored > 0 {
+		s.entered = true
+		s.exited = false
+		s.session = s.trader.Now().In(ist).Format("2006-01-02")
+	}
+	s.mu.Unlock()
+
+	if restored == 0 {
+		return nil
+	}
+
+	// Without ticks on the legs there is no delta and no exit — a resumed
+	// strategy that cannot see its own position is worse than one that never
+	// started, because the UI would show it running.
+	if err := s.trader.Subscribe(symbols); err != nil {
+		return fmt.Errorf("subscribe to resumed legs: %w", err)
+	}
+
+	if s.logger != nil {
+		s.logger.Info("resumed with open legs",
+			"strategy", s.name, "legs", restored, "base_qty", s.baseQty)
+	}
+	s.trader.Signal(strategy.Signal{
+		Kind: "resume", Level: "warn",
+		Message: fmt.Sprintf("Resumed after restart with %d open leg(s); managing, not re-entering.", restored),
+		Data:    map[string]any{"legs": restored},
+	})
+	return nil
+}
+
+// legShape resolves a symbol's strike and option type, preferring the
+// instrument master and falling back to parsing the symbol.
+//
+// The master is authoritative — NSE has changed its symbol format several
+// times — but it is not always loaded when a resume runs, and refusing to
+// resume a live position because the chain has not downloaded yet would strand
+// the position for the sake of tidiness.
+func (s *Strategy) legShape(symbol string) (float64, options.OptionType, bool) {
+	if s.trader != nil {
+		if ins, ok := s.trader.Lookup(symbol); ok && ins.Strike > 0 {
+			switch ins.InstrumentType {
+			case "CE":
+				return ins.Strike, options.Call, true
+			case "PE":
+				return ins.Strike, options.Put, true
+			}
+		}
+	}
+	if spec, ok := options.ParseSymbol(symbol); ok && spec.Strike > 0 {
+		return spec.Strike, spec.Type, true
+	}
+	return 0, 0, false
+}
+
 // rollSession resets the once-per-day entry flags when the IST trading date
 // changes, so the strategy trades again the next morning.
 func (s *Strategy) rollSession(now time.Time) {

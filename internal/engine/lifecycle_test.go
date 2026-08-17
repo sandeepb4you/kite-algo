@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -355,5 +356,121 @@ func TestSignalRecordsLastSignal(t *testing.T) {
 	}
 	if st.LastSignal.At.IsZero() {
 		t.Error("signal timestamp was not filled in")
+	}
+}
+
+// resumableStrategy records what it was handed to resume.
+type resumableStrategy struct {
+	fakeStrategy
+	resumeErr error
+
+	mu       sync.Mutex
+	resumed  []broker.Position
+	resumeAt int // how many ticks had arrived when Resume ran
+}
+
+func (r *resumableStrategy) Resume(_ context.Context, p []broker.Position) error {
+	if r.resumeErr != nil {
+		return r.resumeErr
+	}
+	r.mu.Lock()
+	r.resumed = append(r.resumed, p...)
+	r.resumeAt = int(r.ticks.Load())
+	r.mu.Unlock()
+	return nil
+}
+
+// TestResumeIsRefusedWhenTheStrategyCannotRebuildState is the engine-side half
+// of the double-entry guard.
+//
+// A strategy that cannot reconstruct its state from its positions must not be
+// started while it holds any: it would treat the open position as absent and
+// trade on top of it. Refusing leaves the position unmanaged, which is bad — but
+// it is visible, and the orphan banner says so. A doubled position is neither.
+func TestResumeIsRefusedWhenTheStrategyCannotRebuildState(t *testing.T) {
+	e, _, _ := lifecycleEngine(t)
+
+	_, err := e.StartStrategy(context.Background(), StrategySpec{
+		Type: "fake",
+		Resume: []broker.Position{
+			{TradingSymbol: "NIFTY24AUG24500CE", NetQuantity: -75},
+		},
+	})
+	if err == nil {
+		t.Fatal("started a non-Resumable strategy holding an open position; " +
+			"it would have re-entered on top of it")
+	}
+	if !strings.Contains(err.Error(), "cannot rebuild its state") {
+		t.Errorf("error = %q, want it to name the reason", err)
+	}
+	if len(e.ListStrategies()) != 0 {
+		t.Error("refused instance was left registered")
+	}
+}
+
+// TestResumeRunsBeforeAnyTick pins the ordering. Resume happens after Init and
+// before the instance joins the fan-out snapshot, because a tick delivered to a
+// strategy that still believes it is flat is the whole failure being prevented.
+func TestResumeRunsBeforeAnyTick(t *testing.T) {
+	e, reg, _ := lifecycleEngine(t)
+	var built *resumableStrategy
+
+	reg.Register(strategy.Descriptor{
+		Type:  "resumable",
+		Title: "Resumable",
+		Factory: func(id string, _ *slog.Logger) (strategy.Strategy, error) {
+			built = &resumableStrategy{fakeStrategy: fakeStrategy{name: id}}
+			return built, nil
+		},
+	})
+
+	held := []broker.Position{
+		{TradingSymbol: "NIFTY24AUG24500CE", NetQuantity: -75},
+		{TradingSymbol: "NIFTY24AUG24500PE", NetQuantity: -75},
+	}
+	if _, err := e.StartStrategy(context.Background(), StrategySpec{
+		Type: "resumable", Resume: held,
+	}); err != nil {
+		t.Fatalf("StartStrategy: %v", err)
+	}
+
+	built.mu.Lock()
+	defer built.mu.Unlock()
+	if len(built.resumed) != 2 {
+		t.Fatalf("Resume got %d positions, want 2", len(built.resumed))
+	}
+	if built.resumeAt != 0 {
+		t.Errorf("Resume ran after %d ticks; it must run before any", built.resumeAt)
+	}
+}
+
+// TestResumeFailureLeavesTheStrategyErrored rather than silently running. A
+// strategy whose state could not be rebuilt is in exactly the condition the
+// refusal above exists to prevent.
+func TestResumeFailureLeavesTheStrategyErrored(t *testing.T) {
+	e, reg, _ := lifecycleEngine(t)
+
+	reg.Register(strategy.Descriptor{
+		Type:  "badresume",
+		Title: "Bad resume",
+		Factory: func(id string, _ *slog.Logger) (strategy.Strategy, error) {
+			return &resumableStrategy{
+				fakeStrategy: fakeStrategy{name: id},
+				resumeErr:    errors.New("chain unavailable"),
+			}, nil
+		},
+	})
+
+	_, err := e.StartStrategy(context.Background(), StrategySpec{
+		Type:   "badresume",
+		Resume: []broker.Position{{TradingSymbol: "X", NetQuantity: -75}},
+	})
+	if err == nil {
+		t.Fatal("a strategy whose Resume failed was started anyway")
+	}
+	for _, s := range e.ListStrategies() {
+		if s.State == StateRunning {
+			t.Errorf("instance %s is running after a failed resume", s.InstanceID)
+		}
 	}
 }

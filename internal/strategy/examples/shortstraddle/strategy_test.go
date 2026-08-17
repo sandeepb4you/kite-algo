@@ -134,6 +134,115 @@ func TestTradesAgainOnANewDay(t *testing.T) {
 	}
 }
 
+// resumePositions is a straddle already open under this instance's ID, as the
+// engine would hand it back after a restart. Short, so NetQuantity is negative.
+func resumePositions() []broker.Position {
+	return []broker.Position{
+		{StrategyID: "short-straddle", TradingSymbol: ceSym, NetQuantity: -75, AveragePrice: 120},
+		{StrategyID: "short-straddle", TradingSymbol: peSym, NetQuantity: -75, AveragePrice: 110},
+	}
+}
+
+// TestResumeDoesNotReEnter is the reason the Resumable hook exists.
+//
+// Strategy state is in memory and positions are in sqlite, so a restart used to
+// produce an instance that believed it was flat while its legs were open — and
+// the next tick inside the entry window sold a SECOND straddle on top of the
+// first. Doubling a short options position by redeploying is the worst outcome
+// this codebase can produce, and nothing about it looks wrong until the margin
+// call.
+func TestResumeDoesNotReEnter(t *testing.T) {
+	day := time.Date(2026, 8, 13, 10, 0, 0, 0, ist)
+	s, tr := newStrategy(t, day)
+	ctx := context.Background()
+
+	if err := s.Resume(ctx, resumePositions()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	// Well inside the entry window, which is exactly when a flat instance would
+	// enter.
+	s.OnTick(ctx, spotTick(24510))
+
+	if len(tr.orders) != 0 {
+		t.Fatalf("resumed strategy placed %d order(s) — it re-entered on top of "+
+			"the position it was handed", len(tr.orders))
+	}
+}
+
+// TestResumeKeepsManagingTheLegs is the other half: refusing to re-enter is only
+// useful if the resumed instance still gets its position OUT. A strategy that
+// adopts legs and then never exits them is worse than one that never started,
+// because the UI reports it running.
+func TestResumeKeepsManagingTheLegs(t *testing.T) {
+	day := time.Date(2026, 8, 13, 10, 0, 0, 0, ist)
+	s, tr := newStrategy(t, day)
+	ctx := context.Background()
+
+	if err := s.Resume(ctx, resumePositions()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	// Past the square-off clock: the adopted legs must be bought back.
+	tr.now = time.Date(2026, 8, 13, 15, 20, 0, 0, ist)
+	s.OnTick(ctx, spotTick(24515))
+
+	if len(tr.orders) != 2 {
+		t.Fatalf("square-off after resume placed %d orders, want 2 — the "+
+			"adopted legs would have been carried past the cutoff", len(tr.orders))
+	}
+	for _, o := range tr.orders {
+		if o.Side != broker.SideBuy {
+			t.Errorf("closing order side = %s, want BUY", o.Side)
+		}
+		if o.Quantity != 75 {
+			t.Errorf("closing qty = %d, want 75 (the size actually held)", o.Quantity)
+		}
+	}
+}
+
+// TestResumeIgnoresLongPositions guards the adoption filter. This strategy is
+// only ever short its options, so a long position under its ID is something
+// else — a partial manual unwind, most likely. Adopting it would leave the delta
+// calculation working from a book that never existed.
+func TestResumeIgnoresLongPositions(t *testing.T) {
+	day := time.Date(2026, 8, 13, 10, 0, 0, 0, ist)
+	s, tr := newStrategy(t, day)
+	ctx := context.Background()
+
+	long := []broker.Position{
+		{StrategyID: "short-straddle", TradingSymbol: ceSym, NetQuantity: 75},
+	}
+	if err := s.Resume(ctx, long); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	// Nothing was adopted, so this is a normal flat start: it should enter.
+	s.OnTick(ctx, spotTick(24510))
+	if len(tr.orders) != 2 {
+		t.Fatalf("placed %d orders, want 2 — a long position was mistaken for "+
+			"an open straddle and suppressed the entry", len(tr.orders))
+	}
+}
+
+// TestResumeWithNoPositionsEntersNormally covers the restart that happens before
+// the strategy ever traded. Nothing to adopt must mean nothing is suppressed.
+func TestResumeWithNoPositionsEntersNormally(t *testing.T) {
+	day := time.Date(2026, 8, 13, 10, 0, 0, 0, ist)
+	s, tr := newStrategy(t, day)
+	ctx := context.Background()
+
+	if err := s.Resume(ctx, nil); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	s.OnTick(ctx, spotTick(24510))
+
+	if len(tr.orders) != 2 {
+		t.Fatalf("placed %d orders, want 2 — a resume with nothing open must "+
+			"leave a normal entry possible", len(tr.orders))
+	}
+}
+
 // TestRolloverWaitsForAFlatBook ensures the daily reset never abandons a live
 // position. Clearing the leg map while still short would lose track of it.
 func TestRolloverWaitsForAFlatBook(t *testing.T) {

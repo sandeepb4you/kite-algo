@@ -32,6 +32,15 @@ type StrategySpec struct {
 	InstanceID string
 	Type       string         // registry key
 	Params     map[string]any // raw; normalized against the descriptor
+
+	// Resume carries the instance's already-open positions when this start is a
+	// restore after a restart rather than a fresh operator-initiated start.
+	//
+	// Non-empty means "you are picking up mid-trade": the instance must
+	// implement strategy.Resumable or the start is refused, because a strategy
+	// that cannot rebuild its state would treat the open position as absent and
+	// enter again on top of it.
+	Resume []broker.Position
 }
 
 // StopOptions controls how a strategy is shut down.
@@ -170,6 +179,28 @@ func (e *Engine) StartStrategy(ctx context.Context, spec StrategySpec) (Strategy
 		h.lastErr = err.Error()
 		e.handles[id] = h
 		return e.statusLocked(h), fmt.Errorf("initialize %s: %w", id, err)
+	}
+
+	// Restoring mid-trade. Rebuild the instance's session state from what it
+	// already holds, BEFORE it is published to the fan-out snapshot — a tick
+	// arriving against a strategy that believes it is flat, while its legs are
+	// open, is the double-entry this whole path exists to prevent.
+	if len(spec.Resume) > 0 {
+		r, ok := inst.(strategy.Resumable)
+		if !ok {
+			cancel()
+			return StrategyStatus{}, fmt.Errorf(
+				"cannot resume %s: %d position(s) are open and this strategy "+
+					"cannot rebuild its state; stop it or square off by hand",
+				id, len(spec.Resume))
+		}
+		if err := r.Resume(sctx, spec.Resume); err != nil {
+			cancel()
+			h.state = StateErrored
+			h.lastErr = err.Error()
+			e.handles[id] = h
+			return e.statusLocked(h), fmt.Errorf("resume %s: %w", id, err)
+		}
 	}
 
 	e.handles[id] = h

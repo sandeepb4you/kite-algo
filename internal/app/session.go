@@ -104,6 +104,20 @@ type KiteSession struct {
 
 	// pending holds unconsumed CSRF nonces for in-flight login round-trips.
 	pending map[string]time.Time
+
+	// onMarketData runs once market data is attached and the instrument master
+	// is available. Strategy restore hangs off this rather than off boot: a
+	// resumed strategy has to resolve its open legs against the master and
+	// subscribe for the ticks that drive its exits, and neither exists until a
+	// session is live.
+	onMarketData func(context.Context)
+}
+
+// OnMarketData registers a callback to run each time market data comes up.
+func (s *KiteSession) OnMarketData(fn func(context.Context)) {
+	s.mu.Lock()
+	s.onMarketData = fn
+	s.mu.Unlock()
 }
 
 // NewKiteSession builds a session manager. The client is constructed eagerly
@@ -304,6 +318,16 @@ func (s *KiteSession) Activate(ctx context.Context, token string, persist bool) 
 
 	if s.eng != nil {
 		s.eng.AttachMarketData(instruments, ticker)
+	}
+
+	// After AttachMarketData, so a restored strategy's Subscribe reaches a live
+	// ticker; before the snapshot below, which is slow and must not delay
+	// re-adopting an open position.
+	s.mu.RLock()
+	resume := s.onMarketData
+	s.mu.RUnlock()
+	if resume != nil {
+		resume(ctx)
 	}
 
 	// Snapshot the instrument master before doing anything else with it.

@@ -41,6 +41,29 @@ type Strategy interface {
 	Stop(ctx context.Context) error
 }
 
+// Resumable is implemented by strategies that can rebuild their in-memory
+// session state from positions they already hold.
+//
+// This exists because strategy state does not survive a restart while positions
+// do. A short straddle that has sold its legs knows it has entered only through
+// an in-memory flag; recreate the instance after a redeploy and that flag is
+// false, so the next tick past the entry time sells a SECOND straddle on top of
+// the first. Persisting the instance without this hook is worse than not
+// persisting it at all.
+//
+// Resume is called after Init and before the instance receives any tick, with
+// every open position carrying this instance's StrategyID. Implementations must
+// leave the strategy able to MANAGE what it holds — exits, delta monitoring,
+// square-off — without re-entering it.
+//
+// A strategy that does not implement this is never auto-resumed while it has
+// open positions: the engine refuses to start it and the operator is told, on
+// the grounds that an unmanaged position you know about beats a doubled one you
+// do not.
+type Resumable interface {
+	Resume(ctx context.Context, positions []broker.Position) error
+}
+
 // Flattener is implemented by strategies that know how to unwind their own
 // position correctly — for example buying back short option legs before selling
 // long ones, so the account is never briefly naked.

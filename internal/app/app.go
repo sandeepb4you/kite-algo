@@ -185,6 +185,19 @@ func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog
 	})
 	a.Kite = NewKiteSession(cfg, store, eng, bus, log)
 
+	// Restore strategies that were running when the process last stopped. Hung
+	// off market data rather than boot because resuming an open position needs
+	// the instrument master and a live ticker — see strategies.go for why this
+	// is the one thing that starts without a click.
+	a.Kite.OnMarketData(func(ctx context.Context) {
+		if refused := a.RestoreStrategies(ctx); len(refused) > 0 && log != nil {
+			for _, g := range refused {
+				log.Error("strategy NOT restored; its positions are unmanaged",
+					"strategy", g.StrategyID, "positions", len(g.Positions), "reason", g.Reason)
+			}
+		}
+	})
+
 	a.restorePaperBook(ctx)
 
 	// Best-effort: pick up a token persisted earlier today.

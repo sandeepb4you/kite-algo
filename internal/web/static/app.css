@@ -735,6 +735,18 @@ details summary { cursor: pointer; }
   text-transform: none;
   letter-spacing: 0.01em;
 }
+/* Unmanaged strategy positions. Warn-coloured rather than live-red: real
+   exposure is unattended, but nothing is actively going wrong this second. */
+.modeband-orphan {
+  background: var(--warn);
+  color: #201700;
+  text-transform: none;
+  letter-spacing: 0.01em;
+}
+.modeband-orphan a {
+  color: inherit;
+  font-weight: 700;
+}
 .modeband-nosession a, .modeband-nosession-critical a {
   color: inherit;
   font-weight: 700;
