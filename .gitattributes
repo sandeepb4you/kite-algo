@@ -1,0 +1,10 @@
+# Shell scripts must check out with LF endings even when cloned on Windows.
+# A CRLF script on the deployment host fails as
+#   /usr/bin/env: 'bash\r': No such file or directory
+# which names neither the script nor the real problem.
+*.sh text eol=lf
+
+# Same reasoning: these are read by Linux tooling only.
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

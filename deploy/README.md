@@ -219,11 +219,37 @@ from its feed entirely.
 
 | Task | Command |
 |---|---|
-| Logs | `docker compose logs -f app` |
+| Logs | `docker compose logs -f app` (add `--since 1m` — it replays the whole backlog by default) |
 | Restart | `docker compose restart app` |
-| Upgrade | `git pull && docker compose up -d --build app` |
-| Capture a missed day | `docker compose exec app trading -config /etc/kite-algo/config.yaml -capture 2026-08-14` |
+| Redeploy | `./redeploy.sh` |
+| Undo a bad deploy | `./redeploy.sh --rollback` |
+| Capture a missed day | see below |
 | Shell | `docker compose exec app sh` |
+
+**Redeploying.** `./redeploy.sh` pulls, rebuilds, restarts and then waits until
+the app reports healthy, failing loudly with the log tail if it does not — a
+deploy that returns success while the app crash-loops is the one failure mode
+worth engineering against here. It re-checks `secrets.yaml` ownership every run,
+because an editor that writes-then-renames resets it to root and the app will
+not start. It also asks for confirmation during market hours, since a restart
+drops the data feed and stops any running strategy without restarting it.
+
+The image it replaces is kept as `kite-algo:previous`, so `--rollback` retags
+and restarts without a build.
+
+**Capturing a specific past day** needs the CLI — the capture panel's button
+always targets the most recent trading day. Stop the app first: two processes
+writing the same SQLite file is the thing this deployment is built to avoid.
+
+```sh
+docker compose stop app
+docker compose run --rm app -config /etc/kite-algo/config.yaml -capture 2026-08-14
+docker compose up -d app
+```
+
+`-config` is required here — `compose run` replaces the CMD, and without it the
+capture scope silently falls back to defaults instead of your configured
+underlyings, expiries and strike range.
 
 ## Going live
 
