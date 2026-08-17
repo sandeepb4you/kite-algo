@@ -21,7 +21,7 @@ type Limits struct {
 	MaxDailyLoss     float64 // rupees; block new entries when day PnL <= -this
 	MaxOpenPositions int     // concurrent open positions (distinct symbols)
 	MaxOrderValue    float64 // max rupee value of a single order (qty * price)
-	MaxLotsPerTrade  int     // max lots per order; 0 = unchecked
+	MaxLotsPerTrade  int     // max lots per order; 0 = uncapped (lot-multiple validity still enforced)
 }
 
 // RiskError is returned when an order violates a limit. Typed so callers can
@@ -123,14 +123,25 @@ func (m *Manager) Check(ctx context.Context, req broker.OrderRequest, lotSize in
 		}
 	}
 
-	// 3. Lots-per-trade + valid-lot-quantity checks.
-	if limits.MaxLotsPerTrade > 0 && lotSize > 0 {
-		if req.Quantity%lotSize != 0 {
-			return &RiskError{
-				Rule:    "invalid-lot-quantity",
-				Message: fmt.Sprintf("qty %d is not a multiple of lot size %d", req.Quantity, lotSize),
-			}
+	// 3. Valid lot quantity.
+	//
+	// Validity, not sizing, and therefore NOT conditional on MaxLotsPerTrade.
+	// The exchange rejects a quantity that is not a multiple of the lot size
+	// whatever your limits say, so catching it here saves a round trip and an
+	// order that was never going to rest.
+	//
+	// This used to be nested inside the MaxLotsPerTrade block, which meant
+	// setting that limit to "no limit" quietly disabled the check as well —
+	// switching off a sizing cap should not switch off input validation.
+	if lotSize > 0 && req.Quantity%lotSize != 0 {
+		return &RiskError{
+			Rule:    "invalid-lot-quantity",
+			Message: fmt.Sprintf("qty %d is not a multiple of lot size %d", req.Quantity, lotSize),
 		}
+	}
+
+	// 4. Lots-per-trade cap.
+	if limits.MaxLotsPerTrade > 0 && lotSize > 0 {
 		lots := req.Quantity / lotSize
 		if lots > limits.MaxLotsPerTrade {
 			return &RiskError{
@@ -140,7 +151,7 @@ func (m *Manager) Check(ctx context.Context, req broker.OrderRequest, lotSize in
 		}
 	}
 
-	// 4. Open-positions cap — only blocks orders that would open a NEW symbol.
+	// 5. Open-positions cap — only blocks orders that would open a NEW symbol.
 	if limits.MaxOpenPositions > 0 && openingNew && openPositions >= limits.MaxOpenPositions {
 		return &RiskError{
 			Rule: "max-open-positions",

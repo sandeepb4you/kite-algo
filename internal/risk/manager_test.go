@@ -161,6 +161,30 @@ func TestOpeningOrdersStillEnforceEveryLimit(t *testing.T) {
 	}
 }
 
+// TestLotMultipleSurvivesEveryCapBeingOff pins the one behaviour that made the
+// lot-multiple check worth separating from MaxLotsPerTrade: an operator who
+// switches off the sizing caps is saying "let me trade any size", not "send the
+// exchange quantities it cannot accept". With every cap at zero a malformed
+// quantity must still be rejected here rather than on a round trip to Zerodha.
+func TestLotMultipleSurvivesEveryCapBeingOff(t *testing.T) {
+	m := NewManager(Limits{MaxDailyLoss: 5000}) // every sizing cap off
+	ctx := context.Background()
+
+	err := m.Check(ctx, order(broker.IntentOpen, 70, 100), 75, 0, 0, true)
+	if err == nil {
+		t.Fatal("qty 70 against lot size 75 was accepted with the sizing caps off")
+	}
+	if rule := ruleOf(t, err); rule != "invalid-lot-quantity" {
+		t.Errorf("rule = %q, want %q", rule, "invalid-lot-quantity")
+	}
+
+	// The cap really is off: a size that MaxLotsPerTrade would have blocked
+	// passes, so the check above is validity and not the cap in disguise.
+	if err := m.Check(ctx, order(broker.IntentOpen, 7500, 100), 75, 0, 0, true); err != nil {
+		t.Errorf("100 lots rejected with no lots cap configured: %v", err)
+	}
+}
+
 func TestValidOrderPasses(t *testing.T) {
 	m := NewManager(limits())
 	if err := m.Check(context.Background(), order(broker.IntentOpen, 75, 100), 75, 1, 500, false); err != nil {

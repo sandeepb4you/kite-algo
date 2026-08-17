@@ -74,9 +74,16 @@ storage:
 # Pre-trade risk limits. Tune to your capital and risk appetite.
 risk:
   max_daily_loss: 5000          # rupees: halt NEW entries when day PnL <= -this
-  max_open_positions: 5         # distinct open symbols
-  max_order_value: 100000       # rupees per single order (qty * price)
-  max_lots_per_trade: 1
+
+  # 0 = no limit. Sizing caps are deliberately off: the daily loss cap measures
+  # what is actually at stake, where these three only proxy for it.
+  #
+  # The lot-MULTIPLE check is deliberately unaffected by this: it is validity,
+  # not sizing, so a quantity that is not a multiple of the lot size is still
+  # rejected here rather than on a round trip to the exchange.
+  max_open_positions: 0         # was 5 (distinct open symbols)
+  max_order_value: 0            # was 100000 (rupees per single order)
+  max_lots_per_trade: 0         # was 1
 
   # --- REAL book -------------------------------------------------------------
   # Derived and LOCKED. Unlike `paper` below, none of this is editable from the
@@ -110,7 +117,9 @@ risk:
   # real limits above.
   paper:
     max_daily_loss: 25000
-    max_lots_per_trade: 10         # lots per order (1 lot NIFTY = 75, check current)
+    # max_lots_per_trade is intentionally unset. An override only applies when
+    # it is > 0, so any value here would put the cap back on the simulated book
+    # — which in paper mode is where every order goes.
 
 # Strategy instances. Set enabled: true to activate.
 strategies:

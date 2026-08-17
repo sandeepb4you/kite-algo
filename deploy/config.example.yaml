@@ -64,15 +64,18 @@ capture:
 
 risk:
   max_daily_loss: 5000
-  max_open_positions: 5
-  max_order_value: 100000
-  max_lots_per_trade: 1
+  # 0 = no limit. Sizing caps are off by choice; the daily loss cap is the
+  # guardrail. The lot-MULTIPLE check still runs — it is validity, not sizing.
+  max_open_positions: 0
+  max_order_value: 0
+  max_lots_per_trade: 0
   live:
     max_loss_pct: 1.0
     expiry_square_off_time: "15:00"
   paper:
     max_daily_loss: 25000
-    max_lots_per_trade: 10
+    # max_lots_per_trade unset on purpose: an override only applies when > 0,
+    # so a value here would put the cap back on the simulated book.
 
 strategies:
   - name: "short-straddle"
