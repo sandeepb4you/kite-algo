@@ -126,6 +126,12 @@ type Engine struct {
 	wanted   map[string]struct{}
 	pinned   map[string]struct{}
 
+	// lastTickAt is the arrival time of the most recent tick, in Unix nanos.
+	// Atomic rather than mutex-guarded: it is written on the ticker's read
+	// goroutine for every tick and read by health checks, so it must not
+	// contend with anything on the hot path.
+	lastTickAt atomic.Int64
+
 	// orderStrategy maps an order id (internal for paper, exchange for live) to
 	// the strategy that placed it, so fills can be routed back.
 	orderStrategy sync.Map
@@ -466,6 +472,38 @@ func (e *Engine) HasMarketData() bool {
 	e.cmu.RLock()
 	defer e.cmu.RUnlock()
 	return e.ticker != nil
+}
+
+// tickStaleAfter is how long without a tick counts as "not streaming".
+//
+// Generous relative to a live feed, which prints continuously on the indices
+// during market hours, and deliberately shorter than the gap between sessions:
+// outside trading hours this reports false, which is the truth.
+const tickStaleAfter = 90 * time.Second
+
+// Streaming reports whether market data is actually arriving.
+//
+// Distinct from HasMarketData, which only says a ticker object is attached. The
+// two came apart on a live server: a duplicate session activation left the
+// engine holding a ticker whose connection had been cancelled, so
+// HasMarketData stayed true, /healthz reported streaming, and no tick had
+// arrived for a quarter of an hour. A health signal that cannot distinguish
+// "connected" from "receiving" is the one that lets a silent outage run.
+func (e *Engine) Streaming() bool {
+	last := e.lastTickAt.Load()
+	if last == 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, last)) < tickStaleAfter
+}
+
+// LastTickAt reports when the most recent tick arrived (zero if none has).
+func (e *Engine) LastTickAt() time.Time {
+	last := e.lastTickAt.Load()
+	if last == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, last)
 }
 
 // wantedSymbols returns a snapshot of every symbol anyone has subscribed to.
@@ -861,6 +899,11 @@ func toStrategyInstrument(k *kite.Instrument) strategy.Instrument {
 // handleTick is the ticker's OnTick callback: record, update prices, feed the
 // paper broker, and fan out to strategies.
 func (e *Engine) handleTick(tick marketdata.Tick) {
+	// Stamped before the symbol check: an unlabelled tick still proves the feed
+	// is alive, and treating it as silence would report a healthy connection as
+	// down while pointing at the wrong problem.
+	e.lastTickAt.Store(time.Now().UnixNano())
+
 	if tick.TradingSymbol == "" {
 		return // can't act without a symbol (instrument master missing)
 	}

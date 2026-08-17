@@ -72,7 +72,20 @@ type SessionInfo struct {
 	IssuedAt  time.Time    `json:"issued_at,omitempty"`
 	ExpiresAt time.Time    `json:"expires_at,omitempty"`
 	LastError string       `json:"last_error,omitempty"`
-	Streaming bool         `json:"streaming"`
+	// Streaming reports that ticks are arriving now. Attached reports only that
+	// a ticker object is wired up — true even when its connection is dead, which
+	// is precisely the state that hid a market-data outage once.
+	Streaming  bool      `json:"streaming"`
+	Attached   bool      `json:"market_data_attached"`
+	LastTickAt time.Time `json:"last_tick_at,omitempty"`
+}
+
+// lastTick reads the engine's most recent tick time, tolerating a nil engine.
+func lastTick(e *engine.Engine) time.Time {
+	if e == nil {
+		return time.Time{}
+	}
+	return e.LastTickAt()
 }
 
 // Connected reports whether the session can currently reach Zerodha.
@@ -101,6 +114,15 @@ type KiteSession struct {
 	issuedAt    time.Time
 	expiresAt   time.Time
 	lastErr     string
+
+	// token is the access token the active session was built on, so a repeat
+	// Activate with the same one can be recognised as a no-op.
+	token string
+
+	// activateMu serialises Activate. Distinct from mu, which guards the fields
+	// above: Activate holds this across two slow network calls, and blocking
+	// every status read for the duration would freeze the UI.
+	activateMu sync.Mutex
 
 	// pending holds unconsumed CSRF nonces for in-flight login round-trips.
 	pending map[string]time.Time
@@ -150,7 +172,14 @@ func (s *KiteSession) Snapshot() SessionInfo {
 		IssuedAt:  s.issuedAt,
 		ExpiresAt: s.expiresAt,
 		LastError: s.lastErr,
-		Streaming: s.eng != nil && s.eng.HasMarketData(),
+		// Whether ticks are ARRIVING, not whether a ticker is attached. Those
+		// came apart on 2026-08-17: a cancelled ticker stayed attached, so this
+		// reported streaming while nothing had arrived for fifteen minutes.
+		// A health signal that cannot tell "connected" from "receiving" is the
+		// one that lets a silent outage run through a trading session.
+		Streaming:  s.eng != nil && s.eng.Streaming(),
+		Attached:   s.eng != nil && s.eng.HasMarketData(),
+		LastTickAt: lastTick(s.eng),
 	}
 }
 
@@ -253,6 +282,35 @@ func (s *KiteSession) Activate(ctx context.Context, token string, persist bool) 
 	if token == "" {
 		return errors.New("empty access token")
 	}
+
+	// One activation at a time.
+	//
+	// Two can overlap in normal use: the boot-time token restore and an operator
+	// login started before it finished. Both spend ~20s downloading the
+	// instrument master, so they finish milliseconds apart, and each builds and
+	// starts its own ticker. Two websockets connect, the loser is cancelled, and
+	// the logs read like a connection failure rather than a race.
+	//
+	// This happened on 2026-08-17: two "kite ticker connected" lines 200ms
+	// apart, a "context canceled" three seconds later, and then no market data
+	// at all until the process was restarted.
+	s.activateMu.Lock()
+	defer s.activateMu.Unlock()
+
+	// Already live on this exact token. Rebuilding would re-download the
+	// instrument master and swap a working feed for an identical one, which is
+	// pure risk for no gain — an operator pressing Connect on an already-
+	// connected session should be a no-op, not a reconnection.
+	s.mu.RLock()
+	same := s.state == StateActive && s.token == token && s.ticker != nil
+	s.mu.RUnlock()
+	if same {
+		if s.logger != nil {
+			s.logger.Info("session already active on this token; not reconnecting")
+		}
+		return nil
+	}
+
 	s.setState(StateConnecting, "")
 
 	client := s.Client()
@@ -292,8 +350,14 @@ func (s *KiteSession) Activate(ctx context.Context, token string, persist bool) 
 	ticker := kite.NewTicker(s.cfg.Kite.APIKey, token, s.cfg.Kite.TickerURL, instruments, s.logger)
 
 	s.mu.Lock()
+	// Close whatever this replaces. The engine also cancels the ticker it is
+	// swapping out, but only when there IS an engine — and relying on the
+	// consumer to clean up the producer's resource is how the leak came back
+	// the first time.
+	old := s.ticker
 	s.instruments = instruments
 	s.ticker = ticker
+	s.token = token
 	s.userID = profile.UserID
 	s.userName = profile.UserName
 	s.issuedAt = now
@@ -301,6 +365,10 @@ func (s *KiteSession) Activate(ctx context.Context, token string, persist bool) 
 	s.lastErr = ""
 	s.state = StateActive
 	s.mu.Unlock()
+
+	if old != nil && old != ticker {
+		old.Close()
+	}
 
 	if persist {
 		rec := storage.KiteSession{

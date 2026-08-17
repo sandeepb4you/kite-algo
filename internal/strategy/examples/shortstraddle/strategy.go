@@ -57,6 +57,10 @@ type Strategy struct {
 	// does not move when the operator changes `lots`.
 	baseQty int
 
+	// warnedNoChain suppresses the once-per-session "no option chain" warning,
+	// which would otherwise fire on every tick. Reset by rollSession.
+	warnedNoChain bool
+
 	// session is the IST trading date the entered/exited flags belong to.
 	// Without it those flags are set once and never cleared, so the strategy
 	// trades exactly once for the lifetime of the process. That was invisible
@@ -231,7 +235,15 @@ func (s *Strategy) maybeEnter(ctx context.Context, spot float64) {
 
 	chain := s.trader.Options(s.underlying, time.Time{})
 	if len(chain) == 0 {
-		// No instrument master yet (e.g. dry-run). Nothing to do.
+		// Was a silent return, on the grounds that a dry-run has no instrument
+		// master and this is expected there. On a live server it is not
+		// expected, and the silence is indistinguishable from a dead feed:
+		// the strategy shows as running, ticks climb, and nothing ever opens.
+		// Diagnosing that from the outside meant watching the clock.
+		//
+		// Once per session, so a per-tick log does not bury everything else.
+		s.warnOnce(&s.warnedNoChain, "no option chain for the underlying; cannot enter",
+			"underlying", s.underlying)
 		return
 	}
 	atm := roundTo(spot, s.strikeStep)
@@ -378,6 +390,31 @@ func (s *Strategy) Resume(ctx context.Context, positions []broker.Position) erro
 	return nil
 }
 
+// warnOnce logs and emits a signal the first time a condition is hit in a
+// session, so a per-tick problem reports once instead of thousands of times.
+//
+// The signal matters as much as the log: it surfaces on the strategy's row in
+// the UI, which is where an operator looks when a strategy is not trading —
+// rather than in a container log they have to know to grep.
+func (s *Strategy) warnOnce(flag *bool, msg string, args ...any) {
+	s.mu.Lock()
+	if *flag {
+		s.mu.Unlock()
+		return
+	}
+	*flag = true
+	s.mu.Unlock()
+
+	if s.logger != nil {
+		s.logger.Warn(msg, append([]any{"strategy", s.name}, args...)...)
+	}
+	if s.trader != nil {
+		s.trader.Signal(strategy.Signal{
+			Kind: "skip", Level: "warn", Message: msg,
+		})
+	}
+}
+
 // legShape resolves a symbol's strike and option type, preferring the
 // instrument master and falling back to parsing the symbol.
 //
@@ -427,6 +464,7 @@ func (s *Strategy) rollSession(now time.Time) {
 	s.exited = false
 	s.baseQty = 0
 	s.legs = make(map[string]leg)
+	s.warnedNoChain = false
 }
 
 // maybeExit squares off if delta drifts past exitDelta or the square-off clock hits.

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"kite-algo/internal/events"
+	"kite-algo/internal/marketdata"
 )
 
 // newTestEngine builds a bare Engine with no broker, ticker, or storage — the
@@ -141,5 +142,43 @@ func TestKnownIndexTokensExact(t *testing.T) {
 		if got != w {
 			t.Errorf("index %q = %d, want %d", name, got, w)
 		}
+	}
+}
+
+// TestStreamingMeansTicksAreArriving pins the distinction that hid a live
+// market-data outage: HasMarketData reports that a ticker is attached, which
+// stays true after its connection dies. Streaming must report arrival instead,
+// or a health check cannot tell a working feed from a dead one.
+func TestStreamingMeansTicksAreArriving(t *testing.T) {
+	e := newTestEngine()
+
+	if e.Streaming() {
+		t.Error("Streaming true before any tick arrived")
+	}
+	if !e.LastTickAt().IsZero() {
+		t.Error("LastTickAt set before any tick arrived")
+	}
+
+	e.handleTick(marketdata.Tick{TradingSymbol: "NIFTY 50", LastPrice: 24500})
+
+	if !e.Streaming() {
+		t.Error("Streaming false immediately after a tick")
+	}
+	if e.LastTickAt().IsZero() {
+		t.Error("LastTickAt not stamped by a tick")
+	}
+}
+
+// TestUnlabelledTicksStillCountAsStreaming: a tick with no trading symbol is
+// dropped for trading purposes, but it still proves the socket is alive.
+// Treating it as silence would report a healthy feed as down and send the
+// operator after the wrong problem.
+func TestUnlabelledTicksStillCountAsStreaming(t *testing.T) {
+	e := newTestEngine()
+
+	e.handleTick(marketdata.Tick{InstrumentToken: 256265, LastPrice: 24500})
+
+	if !e.Streaming() {
+		t.Error("an unlabelled tick did not count as streaming")
 	}
 }
