@@ -17,8 +17,18 @@
 
 set -euo pipefail
 
-# Resolve before the cd: $0 may be a relative path, and it is read again below
-# for --help.
+# Everything below runs inside a brace group, which bash must read and parse in
+# full before executing any of it.
+#
+# This script git-pulls, and one of the files a pull can rewrite is this script.
+# Bash reads a plain script incrementally and keeps a byte offset into the file,
+# so replacing it mid-run resumes execution at a shifted position — halfway
+# through a line, in the middle of a word. The failure is spectacular and reads
+# like nothing to do with deployment.
+{
+
+	# Resolve before the cd: $0 may be a relative path, and it is read again
+	# below for --help.
 SELF="$(readlink -f "$0")"
 cd "$(dirname "$SELF")"
 
@@ -190,3 +200,5 @@ cat <<'EOF'
     token expires daily and a redeploy does not refresh it.
 
 EOF
+
+} # end of the parse-it-all-first brace group
