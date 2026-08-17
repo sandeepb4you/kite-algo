@@ -103,7 +103,7 @@ if [ "$ROLLBACK" -eq 1 ]; then
 		die "no kite-algo:previous image — nothing to roll back to"
 	say "Rolling back to the previous image"
 	docker tag kite-algo:previous kite-algo:latest
-	docker compose up -d --no-build app
+	docker compose up -d --no-build --force-recreate app
 else
 	if [ "$PULL" -eq 1 ]; then
 		say "Pulling"
@@ -126,7 +126,15 @@ else
 		docker tag kite-algo:latest kite-algo:previous
 
 	say "Building and restarting"
-	docker compose up -d --build
+	# --force-recreate is not belt-and-braces, it is the point.
+	#
+	# config.yaml is bind-mounted and read once at process start. When the image
+	# is unchanged — a config-only edit, or a redeploy with nothing new to pull —
+	# plain `up -d` sees an up-to-date container, prints "Running", and leaves
+	# the old process alive with the old config still loaded. The deploy then
+	# reports success having applied nothing, which is the worst possible
+	# outcome for a command whose job is to apply changes.
+	docker compose up -d --build --force-recreate
 fi
 
 # ---------------------------------------------------------------------------

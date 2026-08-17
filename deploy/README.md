@@ -229,7 +229,12 @@ from its feed entirely.
 **Redeploying.** `./redeploy.sh` pulls, rebuilds, restarts and then waits until
 the app reports healthy, failing loudly with the log tail if it does not — a
 deploy that returns success while the app crash-loops is the one failure mode
-worth engineering against here. It re-checks `secrets.yaml` ownership every run,
+worth engineering against here.
+
+It always recreates the container, even when the image is unchanged. `config.yaml`
+is bind-mounted and read once at startup, so a config-only edit followed by a
+plain `docker compose up -d` leaves the old process running with the old settings
+and reports success — a redeploy that applied nothing. It re-checks `secrets.yaml` ownership every run,
 because an editor that writes-then-renames resets it to root and the app will
 not start. It also asks for confirmation during market hours, since a restart
 drops the data feed and stops any running strategy without restarting it.
