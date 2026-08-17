@@ -80,7 +80,11 @@ services:
       - "443:443"
 
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro,Z
+      # A directory, for the same reason as conf/ and secrets/ above. This one
+      # is tracked in git rather than edited by hand, and git also replaces
+      # files by creating new ones — so a pull that changed the Caddyfile would
+      # leave this container serving the old routing until it was recreated.
+      - ./caddy:/etc/caddy:ro,Z
       - caddy-data:/data      # certificates — losing this re-issues them
       - caddy-config:/config
       - caddy-logs:/var/log/caddy
