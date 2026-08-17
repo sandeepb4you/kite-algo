@@ -276,14 +276,28 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 
 	// Initialize any strategies added before Start (the AddStrategy path).
-	// Instances created later via StartStrategy are initialized on creation.
+	//
+	// Only those never initialized. Instances created by StartStrategy are
+	// initialized on creation, and Init is NOT idempotent for a strategy holding
+	// a position — shortstraddle's resets its leg map, so re-running it on an
+	// instance that had adopted open legs made it believe it was flat and enter
+	// a second time on top of the first.
 	for _, h := range e.activeStrategies() {
+		e.smu.Lock()
+		done := h.initialized
+		e.smu.Unlock()
+		if done {
+			continue
+		}
 		if e.logger != nil {
 			e.logger.Info("initializing strategy", "name", h.id)
 		}
 		if err := h.inst.Init(ctx, e, e.configFor(h.id)); err != nil {
 			return err
 		}
+		e.smu.Lock()
+		h.initialized = true
+		e.smu.Unlock()
 	}
 
 	// Position/PnL sync loop: keeps the risk view fresh and persists positions.
@@ -446,6 +460,15 @@ func (e *Engine) BrokerMode() string {
 
 // DayPnL returns the cached realized + unrealized PnL for the trading day.
 func (e *Engine) DayPnL() float64 { return e.snapshotDayPnL() }
+
+// RefreshPositions repopulates the position cache from the broker, synchronously.
+//
+// The cache is normally maintained by syncLoop, which only exists once Start
+// has run. Anything that needs positions before then — strategy restore, above
+// all — must ask for them rather than read an empty snapshot and conclude the
+// book is flat. That conclusion, drawn by a resuming strategy, opens a second
+// position on top of the one it already holds.
+func (e *Engine) RefreshPositions(ctx context.Context) { e.refreshPositions(ctx) }
 
 // Positions returns a copy of the cached position snapshot.
 func (e *Engine) Positions() []broker.Position {

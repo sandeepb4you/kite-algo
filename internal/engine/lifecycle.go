@@ -87,6 +87,17 @@ type strategyHandle struct {
 	startedAt time.Time
 	stoppedAt time.Time
 
+	// initialized records that Init has already run for this instance.
+	//
+	// Start() initializes strategies added before it via AddStrategy, and used
+	// to do so unconditionally. An instance created by StartStrategy is already
+	// initialized, and a second Init is not harmless: shortstraddle's Init
+	// resets its leg map, so re-initializing one that had adopted an open
+	// position erased the adoption and let it enter again on top. That is
+	// exactly what happened on 2026-08-17 — a redeploy produced a second live
+	// straddle.
+	initialized bool
+
 	// Hot-path counters, read without the lock.
 	ticks      atomic.Int64
 	orders     atomic.Int64
@@ -173,6 +184,7 @@ func (e *Engine) StartStrategy(ctx context.Context, spec StrategySpec) (Strategy
 	}
 
 	cfg := config.StrategyCfg{Name: id, Enabled: true, Params: params}
+	h.initialized = true // whatever Init returns, it has now run for this instance
 	if err := inst.Init(sctx, e, cfg); err != nil {
 		cancel()
 		h.state = StateErrored

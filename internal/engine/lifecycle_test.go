@@ -23,6 +23,7 @@ type fakeStrategy struct {
 	name string
 
 	ticks   atomic.Int64
+	inits   atomic.Int64
 	stopped atomic.Bool
 	flatten atomic.Bool
 
@@ -36,6 +37,7 @@ type fakeStrategy struct {
 func (f *fakeStrategy) Name() string { return f.name }
 
 func (f *fakeStrategy) Init(ctx context.Context, t strategy.Trader, cfg config.StrategyCfg) error {
+	f.inits.Add(1)
 	if f.initErr != nil {
 		return f.initErr
 	}
@@ -472,5 +474,36 @@ func TestResumeFailureLeavesTheStrategyErrored(t *testing.T) {
 		if s.State == StateRunning {
 			t.Errorf("instance %s is running after a failed resume", s.InstanceID)
 		}
+	}
+}
+
+// TestStartDoesNotReInitializeARunningStrategy pins the second half of the
+// doubled-position bug of 2026-08-17.
+//
+// Start initializes strategies added before it via AddStrategy, and did so
+// unconditionally. An instance already started by StartStrategy was therefore
+// initialized twice — and Init is not idempotent for a strategy holding a
+// position: shortstraddle's resets its leg map. A strategy that had adopted an
+// open straddle on resume was handed a clean slate and sold another.
+func TestStartDoesNotReInitializeARunningStrategy(t *testing.T) {
+	e, _, built := lifecycleEngine(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.runCtx = ctx
+
+	if _, err := e.StartStrategy(ctx, StrategySpec{Type: "fake"}); err != nil {
+		t.Fatalf("StartStrategy: %v", err)
+	}
+	f := built["fake"]
+	if got := f.inits.Load(); got != 1 {
+		t.Fatalf("Init ran %d times on start, want 1", got)
+	}
+
+	// Start returns as soon as the context is done, after doing its init pass.
+	cancel()
+	_ = e.Start(ctx)
+
+	if got := f.inits.Load(); got != 1 {
+		t.Fatalf("Init ran %d times after Engine.Start; a running strategy was "+
+			"re-initialized and would have lost any adopted position", got)
 	}
 }

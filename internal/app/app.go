@@ -200,10 +200,7 @@ func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog
 
 	a.restorePaperBook(ctx)
 
-	// Best-effort: pick up a token persisted earlier today.
-	if err := a.Kite.Restore(ctx); err != nil && log != nil {
-		log.Warn("restore kite session failed", "err", err)
-	}
+	// The persisted token is deliberately NOT restored here. See Run.
 	return a, nil
 }
 
@@ -216,6 +213,31 @@ func (a *App) Run(ctx context.Context) error {
 	go a.WatchRealPnL(ctx)
 	a.startCapture(ctx)
 	a.startExpirySweeper(ctx)
+
+	// Restore the persisted Zerodha token only once the engine is running.
+	//
+	// This used to happen in New, and the ordering was wrong in two ways that
+	// compounded into a doubled position on 2026-08-17.
+	//
+	// Restoring a session brings market data up, which triggers strategy
+	// restore. Doing that before Engine.Start meant:
+	//
+	//   1. The position cache was empty — syncLoop, which fills it, is started
+	//      by Engine.Start. So a resuming strategy was handed no positions,
+	//      concluded it was flat, and entered again on top of what it held.
+	//   2. Engine.Start then re-ran Init on the instance it found already
+	//      running, resetting the very state a resume would have rebuilt.
+	//
+	// In a goroutine because Engine.Start blocks until ctx ends. No sleep to
+	// "let the engine settle": RestoreStrategies fetches positions itself rather
+	// than trusting a cache that may not be populated, so this is correct
+	// whichever order the two actually complete in.
+	go func() {
+		if err := a.Kite.Restore(ctx); err != nil && a.Log != nil {
+			a.Log.Warn("restore kite session failed", "err", err)
+		}
+	}()
+
 	return a.Engine.Start(ctx)
 }
 

@@ -132,6 +132,15 @@ func (a *App) RestoreStrategies(ctx context.Context) []OrphanGroup {
 		return nil
 	}
 
+	// Fetch positions rather than trusting the cache.
+	//
+	// The cache is filled by the engine's sync loop, which may not have run yet
+	// — restore is triggered by market data coming up, and that can happen
+	// before or after Start depending on how quickly the session is restored.
+	// Reading an empty snapshot here does not fail safe: the strategy is told it
+	// holds nothing, so it enters again on top of a position it already has.
+	a.Engine.RefreshPositions(ctx)
+
 	held := a.positionsByStrategy(ctx)
 
 	var refused []OrphanGroup

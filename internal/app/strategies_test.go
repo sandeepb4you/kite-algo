@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"kite-algo/internal/broker"
 	"kite-algo/internal/config"
@@ -151,5 +152,111 @@ func TestPositionsByStrategyIgnoresManualAndClosed(t *testing.T) {
 				t.Errorf("closed position %s was grouped as held", p.TradingSymbol)
 			}
 		}
+	}
+}
+
+// resumableFake records the positions it was handed on resume.
+type resumableFake struct {
+	noopStrategy
+	mu      sync.Mutex
+	resumed []broker.Position
+}
+
+func (r *resumableFake) Resume(_ context.Context, p []broker.Position) error {
+	r.mu.Lock()
+	r.resumed = append(r.resumed, p...)
+	r.mu.Unlock()
+	return nil
+}
+
+const resumableType = "app-test-resumable"
+
+var (
+	registerResumableOnce sync.Once
+	lastResumable         *resumableFake
+	resumableMu           sync.Mutex
+)
+
+func registerResumable(t *testing.T) {
+	t.Helper()
+	registerResumableOnce.Do(func() {
+		strategy.Register(strategy.Descriptor{
+			Type:  resumableType,
+			Title: "App test resumable",
+			Factory: func(id string, _ *slog.Logger) (strategy.Strategy, error) {
+				r := &resumableFake{noopStrategy: noopStrategy{name: id}}
+				resumableMu.Lock()
+				lastResumable = r
+				resumableMu.Unlock()
+				return r, nil
+			},
+		})
+	})
+}
+
+// TestRestoreHandsTheStrategyItsOpenPositions is the regression for the doubled
+// straddle of 2026-08-17.
+//
+// Restore read the engine's cached position snapshot, which is filled by the
+// sync loop that Engine.Start launches. Market data — and therefore strategy
+// restore — could arrive first, so the cache was empty, Resume was handed
+// nothing, and the strategy concluded it was flat and entered a second position
+// on top of the one it already held. In paper that cost nothing; on the real
+// book it is a doubled short straddle nobody chose.
+//
+// The position here is seeded through storage exactly as a previous process
+// would have left it, so the test exercises the real restart path: New() seeds
+// the paper book from sqlite, RestoreStrategies fetches, Resume receives.
+func TestRestoreHandsTheStrategyItsOpenPositions(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "trading.db")
+	ctx := context.Background()
+
+	a := riskTestApp(t, db, configDefaults)
+	registerResumable(t)
+
+	if _, err := a.StartStrategy(ctx, engine.StrategySpec{
+		InstanceID: "res-1", Type: resumableType,
+	}); err != nil {
+		t.Fatalf("StartStrategy: %v", err)
+	}
+
+	// A leg this instance is holding, as the previous process persisted it.
+	pos := &broker.Position{
+		StrategyID:    "res-1",
+		TradingSymbol: "NIFTY24AUG24500CE",
+		Exchange:      "NFO",
+		Product:       "MIS",
+		NetQuantity:   -75,
+		AveragePrice:  120,
+		Book:          broker.BookPaper,
+		// Today: an MIS position from a previous session is deliberately not
+		// restored, since the exchange has already closed it out.
+		Updated: time.Now(),
+	}
+	if err := a.Store.UpsertPosition(ctx, pos); err != nil {
+		t.Fatalf("seed position: %v", err)
+	}
+
+	// Restart against the same database.
+	b := riskTestApp(t, db, configDefaults)
+	if refused := b.RestoreStrategies(ctx); len(refused) != 0 {
+		t.Fatalf("restore refused: %+v", refused)
+	}
+
+	resumableMu.Lock()
+	got := lastResumable
+	resumableMu.Unlock()
+	if got == nil {
+		t.Fatal("no instance was constructed on restore")
+	}
+
+	got.mu.Lock()
+	defer got.mu.Unlock()
+	if len(got.resumed) == 0 {
+		t.Fatal("Resume was handed no positions; the strategy would believe it " +
+			"is flat and open a second position on top of the one it holds")
+	}
+	if got.resumed[0].TradingSymbol != "NIFTY24AUG24500CE" {
+		t.Errorf("resumed with %q, want the held leg", got.resumed[0].TradingSymbol)
 	}
 }
