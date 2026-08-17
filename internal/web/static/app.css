@@ -4,6 +4,14 @@
    colour alone. */
 
 :root {
+  /* Tell the browser this is a dark UI, so it renders NATIVE controls to match.
+     Without it, <input type="date"> draws its calendar button in light-mode
+     colours — a near-black glyph on a near-black field, invisible unless you
+     know to click where it should be — and the date picker itself opens as a
+     white panel. Restyling the glyph with a filter would fix the icon and leave
+     the popup blinding; this fixes both, plus scrollbars and select menus. */
+  color-scheme: dark;
+
   --bg: #0f1115;
   --panel: #171a21;
   --panel-2: #1e222b;
@@ -572,6 +580,15 @@ input[type="date"], input[type="time"], select {
   font: inherit;
 }
 input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* The capture form is one date and one button, not a page of fields. The global
+   full-width rule above suits a form column and looks broken here, so this one
+   is sized to its content. */
+#capture-date {
+  width: auto;
+  min-width: 160px;
+  margin-bottom: 8px;
+}
 form .btn-primary { width: 100%; margin-top: 16px; }
 
 /* Strategy parameters on the backtest form. Grouped in a fieldset because they

@@ -28,6 +28,15 @@ const testPassword = "integration-test-password"
 // HTTP handlers — against a temporary database, and returns an httptest server.
 func newTestServer(t *testing.T) (*httptest.Server, *app.App) {
 	t.Helper()
+	return newTestServerWith(t, nil)
+}
+
+// newTestServerWith builds the same server, letting a test adjust the config
+// before the app is constructed — capture, risk limits and mode all change what
+// the UI renders, and a test needing one of those should not have to rebuild
+// the whole harness to get it.
+func newTestServerWith(t *testing.T, mutate func(*config.Config)) (*httptest.Server, *app.App) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -48,6 +57,10 @@ func newTestServer(t *testing.T) (*httptest.Server, *app.App) {
 	}
 	// Load applies defaults; construct them directly for the fields we rely on.
 	cfg.Web.PublicURL = "http://127.0.0.1"
+
+	if mutate != nil {
+		mutate(cfg)
+	}
 
 	store, err := sqlite.New(ctx, cfg.Storage.SQLitePath, quietLogger())
 	if err != nil {

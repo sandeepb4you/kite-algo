@@ -52,21 +52,33 @@
     </p>
   {{end}}
 
-  {{/* The target is the most recent TRADING day. Defaulting to "today" would
-       make the button a no-op every weekend — capture skips days the exchange
-       was shut, and it would report success having done nothing. */}}
+  {{/* Defaults to the most recent TRADING day, not to today: on a weekend
+       "today" would make the button a no-op, reporting success having captured
+       nothing.
+
+       Editable, because backfilling a day that was missed is the main reason to
+       run this by hand and the alternative was a docker command with the
+       container stopped. max is the same default — a future date has no data
+       and the server rejects it anyway; stopping it here saves the round trip.
+
+       The server re-validates whatever arrives: non-trading days, future dates
+       and malformed input are all refused by captureTargetDay. This input is a
+       convenience, never the check. */}}
   <form method="post" action="/api/capture/run" data-result="#capture-result">
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
-    <input type="hidden" name="date" value="{{.Target}}">
+    <label for="capture-date">Trading day</label>
+    <input id="capture-date" name="date" type="date"
+           value="{{.Target}}" max="{{.Target}}">
     <button class="btn" type="submit" {{if or .Status.Running (not .Ready)}}disabled{{end}}>
-      Capture {{.Target}} now
+      Capture now
     </button>
     <span class="muted small">
       {{if not .IsToday}}
-        Most recent trading day — today is not one.
+        Defaulted to the most recent trading day — today is not one.
       {{end}}
       Backfills each contract's history to the lookback horizon; already-stored
-      bars are skipped.
+      bars are skipped. Contracts that have already expired cannot be fetched at
+      all — Kite drops them from its historical feed.
     </span>
   </form>
   <div id="capture-result"></div>

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"kite-algo/internal/config"
 	"kite-algo/internal/history"
 )
 
@@ -120,5 +121,35 @@ func TestCaptureFragmentRenders(t *testing.T) {
 	code, body := getStatusBody(t, c, ts.URL+"/partials/capture")
 	if code != http.StatusOK {
 		t.Fatalf("HTTP %d: %s", code, truncate(body, 300))
+	}
+}
+
+// TestCapturePanelOffersAnEditableDay pins the day as a real date input rather
+// than the hidden field it used to be.
+//
+// Backfilling a day that was missed is the main reason to run a capture by
+// hand, and the panel previously only offered the most recent trading day —
+// any other date meant stopping the container and running the CLI. The server
+// already accepted an arbitrary date; only the form withheld it.
+func TestCapturePanelOffersAnEditableDay(t *testing.T) {
+	ts, _ := newTestServerWith(t, func(cfg *config.Config) {
+		cfg.Capture.Enabled = true
+		cfg.Capture.RunAt = "15:40"
+		cfg.Capture.Interval = "5minute"
+	})
+	c := loginClient(t, ts)
+
+	_, body := getStatusBody(t, c, ts.URL+"/partials/capture")
+
+	if strings.Contains(body, `type="hidden" name="date"`) {
+		t.Error("the capture day is still a hidden field; it cannot be changed from the UI")
+	}
+	if !strings.Contains(body, `name="date" type="date"`) {
+		t.Errorf("no date input in the capture panel:\n%s", truncate(body, 400))
+	}
+	// A future day has no data and the server refuses it; the form should not
+	// offer it in the first place.
+	if !strings.Contains(body, "max=") {
+		t.Error("the date input has no max, so it offers days that cannot be captured")
 	}
 }
