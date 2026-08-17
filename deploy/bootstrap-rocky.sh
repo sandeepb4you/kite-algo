@@ -76,8 +76,19 @@ NOTHING IS RUNNING YET. Next, on this server:
      either way, and your api_secret does not become world-readable on the box.
 
   3. Set the operator password (interactive)
-       docker compose run --rm -it \\
-         -v "\$PWD/secrets.yaml:/secrets/secrets.yaml:Z" app -set-password
+       docker compose build app
+       docker run --rm -it \\
+         -e TRADING_SECRETS_PATH=/secrets/secrets.yaml \\
+         -v "\$PWD/secrets.yaml:/secrets/secrets.yaml:Z" \\
+         kite-algo:latest -set-password
+
+     Plain 'docker run', not 'docker compose run': the compose service mounts
+     secrets.yaml read-only and a -v on the same path does not override it, so
+     the compose form prompts for the password and then dies on
+       error: open /secrets/secrets.yaml: read-only file system
+     The -e is needed because docker run does not inherit compose's
+     environment:, and there is no -config on purpose — config.yaml binds
+     0.0.0.0, which the app refuses while no password is set.
 
   4. Start
        docker compose up -d --build

@@ -78,11 +78,30 @@ NOTHING IS RUNNING YET. Next, on this server:
        cp .env.example        .env              # SITE_ADDRESS = this server's public IP
        cp config.example.yaml config.yaml       # web.public_url = https://<that IP>
        cp ../secrets.example.yaml secrets.yaml  # Kite api_key + api_secret
+       chown 10001:10001 secrets.yaml           # REQUIRED — see below
        chmod 600 secrets.yaml
 
+     The chown is not tidiness. The container runs as UID 10001, not root, and
+     a bind mount carries host ownership through unchanged — so a root-owned
+     600 file crash-loops the app on
+       error: read secrets /secrets/secrets.yaml: permission denied
+     Set the owner rather than relaxing the mode to 644: root still reads it
+     either way, and your api_secret does not become world-readable on the box.
+
   3. Set the operator password (interactive)
-       docker compose run --rm -it \\
-         -v "\$PWD/secrets.yaml:/secrets/secrets.yaml" app -set-password
+       docker compose build app
+       docker run --rm -it \\
+         -e TRADING_SECRETS_PATH=/secrets/secrets.yaml \\
+         -v "\$PWD/secrets.yaml:/secrets/secrets.yaml:Z" \\
+         kite-algo:latest -set-password
+
+     Plain 'docker run', not 'docker compose run': the compose service mounts
+     secrets.yaml read-only and a -v on the same path does not override it, so
+     the compose form prompts for the password and then dies on
+       error: open /secrets/secrets.yaml: read-only file system
+     The -e is needed because docker run does not inherit compose's
+     environment:, and there is no -config on purpose — config.yaml binds
+     0.0.0.0, which the app refuses while no password is set.
 
   4. Start
        docker compose up -d --build

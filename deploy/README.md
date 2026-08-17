@@ -118,8 +118,32 @@ chown 10001:10001 secrets.yaml  # NOT optional — see below
 chmod 600 secrets.yaml
 ls -ln secrets.yaml             # want: -rw------- 1 10001 10001
 
-docker compose run --rm -it   -v "$PWD/secrets.yaml:/secrets/secrets.yaml:Z" app -set-password
+docker compose build app        # the next step needs the image to exist
+docker run --rm -it \
+  -e TRADING_SECRETS_PATH=/secrets/secrets.yaml \
+  -v "$PWD/secrets.yaml:/secrets/secrets.yaml:Z" \
+  kite-algo:latest -set-password
 ```
+
+**Plain `docker run`, not `docker compose run`.** The compose service mounts
+`secrets.yaml` read-only, and a `-v` on the same container path does not
+override that — the compose form prompts you for a password, hashes it, and
+*then* dies on `open /secrets/secrets.yaml: read-only file system`. Running the
+image directly is what gets you a writable mount.
+
+The other two arguments are not decoration either:
+
+- **`-e TRADING_SECRETS_PATH`** — `docker run` does not inherit the compose
+  service's `environment:`, and without it the path falls back to
+  `~/.trading/secrets.yaml` *inside* the container. That write succeeds, reports
+  success, and vanishes with the container.
+- **No `-config`** — `config.yaml` sets `web.addr` to `0.0.0.0:8080`, and the
+  startup check rejects a non-loopback address when no password is set yet,
+  which is the very thing you are running this to fix. Omitting the flag leaves
+  `web.addr` at its `127.0.0.1:8080` default, which passes.
+
+Minimum 12 characters. A short password or a mismatched confirmation exits with
+an error and writes nothing — rerun the command.
 
 **The `chown` is required, and `chmod 600` alone actively breaks things.** The
 container runs as UID 10001, not root, and a bind mount carries the host's
