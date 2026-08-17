@@ -192,6 +192,21 @@ func (t *Ticker) Run(ctx context.Context) error {
 		if t.isStopped() {
 			return nil
 		}
+
+		// A cancelled context is a deliberate shutdown — this ticker is being
+		// replaced, or the process is stopping. Reporting it as an error and
+		// then announcing a reconnect describes a failure that did not happen,
+		// and it is actively misleading: the one time market data really did
+		// stop, the logs showed "ticker error: context canceled" followed by
+		// "kite ticker reconnecting", which reads like a broken connection
+		// rather than the orderly disposal of a spare one.
+		if ctx.Err() != nil {
+			if t.logger != nil {
+				t.logger.Debug("kite ticker stopped; context done")
+			}
+			return ctx.Err()
+		}
+
 		if t.OnError != nil && err != nil {
 			t.OnError(err)
 		}
