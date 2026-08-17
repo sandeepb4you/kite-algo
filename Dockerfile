@@ -28,10 +28,28 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # given the process is not internet-facing.
 FROM alpine:3.20
 
-# ca-certificates: every Kite API call is HTTPS and fails without them.
-# tzdata: the Go binary embeds its own copy (time/tzdata), but having it here
-# too makes the TZ env var work for log timestamps.
-RUN apk add --no-cache ca-certificates tzdata
+# No `apk add` here, deliberately.
+#
+# ca-certificates and tzdata used to be installed from the Alpine mirror, which
+# made every rebuild depend on dl-cdn.alpinelinux.org being reachable. That is a
+# CDN which fails intermittently — "temporary error (try again later)" is its
+# own wording — and it publishes AAAA records, so a host with a default IPv6
+# route but no working IPv6 path stalls on it too. Either way the build died on
+# a step that needs no network at all.
+#
+# ca-certificates: still required — every Kite API call is HTTPS and fails
+# without a trust store. Copied from the build stage, which demonstrably has one:
+# `go mod download` above talks to proxy.golang.org over HTTPS and could not
+# have succeeded otherwise.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+# tzdata: not installed, and not needed. internal/app/session.go imports
+# _ "time/tzdata", so the binary carries the whole database and the TZ setting
+# below resolves against that embedded copy rather than /usr/share/zoneinfo.
+#
+# What this costs: `date` inside `docker compose exec app sh` reports UTC,
+# because busybox has no embedded database to fall back on. Application log
+# timestamps are unaffected — those come from the Go program, in IST.
 
 # Runs as a non-root user that owns only its data directory.
 RUN adduser -D -u 10001 -h /home/trading trading \
