@@ -65,7 +65,15 @@ NOTHING IS RUNNING YET. Next, on this server:
        cp .env.example        .env              # SITE_ADDRESS = this server's public IP
        cp config.example.yaml config.yaml       # web.public_url = https://<that IP>
        cp ../secrets.example.yaml secrets.yaml  # Kite api_key + api_secret
+       chown 10001:10001 secrets.yaml           # REQUIRED — see below
        chmod 600 secrets.yaml
+
+     The chown is not tidiness. The container runs as UID 10001, not root, and
+     a bind mount carries host ownership through unchanged — so a root-owned
+     600 file crash-loops the app on
+       error: read secrets /secrets/secrets.yaml: permission denied
+     Set the owner rather than relaxing the mode to 644: root still reads it
+     either way, and your api_secret does not become world-readable on the box.
 
   3. Set the operator password (interactive)
        docker compose run --rm -it \\

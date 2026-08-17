@@ -114,10 +114,24 @@ and the throttle becomes global instead of per-attacker.
 ```sh
 cp ../secrets.example.yaml secrets.yaml
 $EDITOR secrets.yaml            # api_key + api_secret
+chown 10001:10001 secrets.yaml  # NOT optional — see below
 chmod 600 secrets.yaml
+ls -ln secrets.yaml             # want: -rw------- 1 10001 10001
 
-docker compose run --rm -it   -v "$PWD/secrets.yaml:/secrets/secrets.yaml" app -set-password
+docker compose run --rm -it   -v "$PWD/secrets.yaml:/secrets/secrets.yaml:Z" app -set-password
 ```
+
+**The `chown` is required, and `chmod 600` alone actively breaks things.** The
+container runs as UID 10001, not root, and a bind mount carries the host's
+ownership straight through — so a root-owned `600` file leaves the app crash-
+looping on `read secrets /secrets/secrets.yaml: permission denied` before it
+reaches any of its own checks.
+
+Set the owner rather than loosening the mode to `644`. Root still reads and
+writes the file either way, `600` still keeps every other account on the box
+out, and your `api_secret` does not become world-readable to get there. The same
+applies if you ever replace this file: re-`chown` it, or the app stops on the
+next restart.
 
 The app **refuses to start** on a non-loopback address with no password, so this
 cannot be skipped by accident.
