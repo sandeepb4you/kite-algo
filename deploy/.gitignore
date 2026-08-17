@@ -1,4 +1,9 @@
 # Real deployment values never get committed.
 .env
+conf/
+secrets/
+
+# The pre-directory-mount layout. Kept ignored so an older checkout that still
+# has these files does not suddenly offer to commit them.
 config.yaml
 secrets.yaml

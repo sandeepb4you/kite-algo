@@ -63,24 +63,52 @@ die() {
 # touched, so a misconfigured box fails while it is still serving.
 # ---------------------------------------------------------------------------
 
-for f in .env config.yaml secrets.yaml; do
-	[ -f "$f" ] || die "missing $f — see README section 1 and 2"
-done
+# Migrate the pre-directory-mount layout in place.
+#
+# config.yaml and secrets.yaml used to be bind-mounted as individual files and
+# now live one directory down. They are git-ignored, so a pull cannot move them
+# and a box that skipped this step would start against an empty conf/ — the app
+# would fall back to defaults, which is a far worse outcome than failing.
+if [ -f config.yaml ] && [ ! -f conf/config.yaml ]; then
+	warn "moving config.yaml -> conf/config.yaml (directory-mount layout)"
+	mkdir -p conf && mv config.yaml conf/config.yaml
+fi
+if [ -f secrets.yaml ] && [ ! -f secrets/secrets.yaml ]; then
+	warn "moving secrets.yaml -> secrets/secrets.yaml (directory-mount layout)"
+	mkdir -p secrets && mv secrets.yaml secrets/secrets.yaml
+fi
+
+[ -f .env ] || die "missing .env — see README section 1"
+[ -f conf/config.yaml ] || die "missing conf/config.yaml — see README section 1"
+[ -f secrets/secrets.yaml ] || die "missing secrets/secrets.yaml — see README section 2"
 
 # The recurring failure on this deployment: the container runs as UID 10001 and
-# a bind mount carries host ownership through unchanged, so a root-owned
-# secrets.yaml crash-loops the app on "permission denied" before it reaches any
-# of its own checks. Editors that write-then-rename silently reset the owner to
-# root, so this is re-checked on every deploy rather than assumed.
-owner="$(stat -c '%u:%g' secrets.yaml)"
-if [ "$owner" != "10001:10001" ]; then
-	warn "secrets.yaml is owned by $owner, not 10001:10001 — fixing"
-	chown 10001:10001 secrets.yaml || die "chown failed; re-run as root"
-fi
-[ "$(stat -c '%a' secrets.yaml)" = "600" ] || {
-	warn "tightening secrets.yaml to 600"
-	chmod 600 secrets.yaml
+# a bind mount carries host ownership through unchanged, so root-owned secrets
+# crash-loop the app on "permission denied" before it reaches any of its own
+# checks. Editors that write-then-rename silently reset the owner to root, so
+# this is re-checked on every deploy rather than assumed.
+#
+# The directory needs it too: 10001 cannot read a file it cannot traverse to,
+# and the error is the same "permission denied" with no hint of which of the
+# two is at fault.
+for p in secrets secrets/secrets.yaml; do
+	owner="$(stat -c '%u:%g' "$p")"
+	if [ "$owner" != "10001:10001" ]; then
+		warn "$p is owned by $owner, not 10001:10001 — fixing"
+		chown 10001:10001 "$p" || die "chown failed; re-run as root"
+	fi
+done
+# 700 on the directory, 600 on the file: root and the app, nobody else.
+[ "$(stat -c '%a' secrets)" = "700" ] || { chmod 700 secrets; }
+[ "$(stat -c '%a' secrets/secrets.yaml)" = "600" ] || {
+	warn "tightening secrets/secrets.yaml to 600"
+	chmod 600 secrets/secrets.yaml
 }
+
+# conf/ is deliberately left world-readable. It holds no credentials by design,
+# and a 600 config owned by 10001 would break the moment an editor replaced it
+# as root — trading one silent failure for another.
+chmod 755 conf 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Market-hours guard.

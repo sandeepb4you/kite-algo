@@ -62,28 +62,35 @@ NOTHING IS RUNNING YET. Next, on this server:
        cd $APP_DIR/deploy
 
   2. Fill in the three files
-       cp .env.example        .env              # SITE_ADDRESS = this server's public IP
-       cp config.example.yaml config.yaml       # web.public_url = https://<that IP>
-       cp ../secrets.example.yaml secrets.yaml  # Kite api_key + api_secret
-       chown 10001:10001 secrets.yaml           # REQUIRED — see below
-       chmod 600 secrets.yaml
+       mkdir -p conf secrets
+       cp .env.example        .env                      # SITE_ADDRESS = this server's public IP
+       cp config.example.yaml conf/config.yaml          # web.public_url = https://<that IP>
+       cp ../secrets.example.yaml secrets/secrets.yaml  # Kite api_key + api_secret
+       chown -R 10001:10001 secrets                     # REQUIRED — see below
+       chmod 700 secrets && chmod 600 secrets/secrets.yaml
+
+     conf/ and secrets/ are mounted as DIRECTORIES. A single-file bind mount is
+     pinned to an inode at container creation, and editors save by writing a
+     temp file and renaming over the original — so the host file changes while
+     the container goes on reading the old one, through every kind of restart.
 
      The chown is not tidiness. The container runs as UID 10001, not root, and
-     a bind mount carries host ownership through unchanged — so a root-owned
-     600 file crash-loops the app on
+     a bind mount carries host ownership through unchanged — so root-owned
+     secrets crash-loop the app on
        error: read secrets /secrets/secrets.yaml: permission denied
-     Set the owner rather than relaxing the mode to 644: root still reads it
-     either way, and your api_secret does not become world-readable on the box.
+     The directory needs it too: a file you cannot traverse to fails the same
+     way. Set the owner rather than relaxing the mode to 644: root still reads
+     it either way, and your api_secret does not become world-readable.
 
   3. Set the operator password (interactive)
        docker compose build app
        docker run --rm -it \\
          -e TRADING_SECRETS_PATH=/secrets/secrets.yaml \\
-         -v "\$PWD/secrets.yaml:/secrets/secrets.yaml:Z" \\
+         -v "\$PWD/secrets:/secrets:Z" \\
          kite-algo:latest -set-password
 
      Plain 'docker run', not 'docker compose run': the compose service mounts
-     secrets.yaml read-only and a -v on the same path does not override it, so
+     secrets/ read-only and a -v on the same path does not override it, so
      the compose form prompts for the password and then dies on
        error: open /secrets/secrets.yaml: read-only file system
      The -e is needed because docker run does not inherit compose's

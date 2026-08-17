@@ -86,9 +86,17 @@ the cloud firewall; the RHEL one does not, for the reasons below.
 
 ```sh
 cd /opt/kite-algo/deploy
+mkdir -p conf secrets
 cp .env.example        .env
-cp config.example.yaml config.yaml
+cp config.example.yaml conf/config.yaml
 ```
+
+`conf/` and `secrets/` are mounted into the container as **directories**, not as
+individual files. A single-file bind mount is pinned to an inode when the
+container is created, and most editors save by writing a temporary file and
+renaming it over the original — so the host file changes while the container
+keeps reading the old contents, through restarts, until it is recreated. This
+layout resolves the path on each access instead.
 
 Edit `.env`:
 
@@ -97,7 +105,7 @@ SITE_ADDRESS=203.0.113.10           # the server's public IP, no scheme
 ALLOWED_IPS=27.7.11.10              # where you browse from; CIDR ok
 ```
 
-Edit `config.yaml` — the settings that must agree:
+Edit `conf/config.yaml` — the settings that must agree:
 
 | Setting | Value |
 |---|---|
@@ -112,24 +120,25 @@ and the throttle becomes global instead of per-attacker.
 ## 2. Secrets
 
 ```sh
-cp ../secrets.example.yaml secrets.yaml
-$EDITOR secrets.yaml            # api_key + api_secret
-chown 10001:10001 secrets.yaml  # NOT optional — see below
-chmod 600 secrets.yaml
-ls -ln secrets.yaml             # want: -rw------- 1 10001 10001
+cp ../secrets.example.yaml secrets/secrets.yaml
+$EDITOR secrets/secrets.yaml         # api_key + api_secret
+chown -R 10001:10001 secrets         # NOT optional — see below
+chmod 700 secrets
+chmod 600 secrets/secrets.yaml
+ls -lnd secrets; ls -ln secrets/secrets.yaml
 
-docker compose build app        # the next step needs the image to exist
+docker compose build app             # the next step needs the image to exist
 docker run --rm -it \
   -e TRADING_SECRETS_PATH=/secrets/secrets.yaml \
-  -v "$PWD/secrets.yaml:/secrets/secrets.yaml:Z" \
+  -v "$PWD/secrets:/secrets:Z" \
   kite-algo:latest -set-password
 ```
 
 **Plain `docker run`, not `docker compose run`.** The compose service mounts
-`secrets.yaml` read-only, and a `-v` on the same container path does not
-override that — the compose form prompts you for a password, hashes it, and
-*then* dies on `open /secrets/secrets.yaml: read-only file system`. Running the
-image directly is what gets you a writable mount.
+`secrets/` read-only, and a `-v` on the same container path does not override
+that — the compose form prompts you for a password, hashes it, and *then* dies
+on `open /secrets/secrets.yaml: read-only file system`. Running the image
+directly is what gets you a writable mount.
 
 The other two arguments are not decoration either:
 
@@ -151,11 +160,20 @@ ownership straight through — so a root-owned `600` file leaves the app crash-
 looping on `read secrets /secrets/secrets.yaml: permission denied` before it
 reaches any of its own checks.
 
+The directory needs the same treatment for the same reason: a file you cannot
+traverse to is a file you cannot read, and it fails with the identical message.
+That is why the `chown` is `-R` and the directory is `700`.
+
 Set the owner rather than loosening the mode to `644`. Root still reads and
 writes the file either way, `600` still keeps every other account on the box
 out, and your `api_secret` does not become world-readable to get there. The same
 applies if you ever replace this file: re-`chown` it, or the app stops on the
-next restart.
+next restart. `./redeploy.sh` re-checks and repairs both on every run, which is
+the reliable way to not think about this again.
+
+`conf/` is deliberately left world-readable. It holds no credentials by design,
+and a `600` config owned by 10001 would break the moment an editor rewrote it as
+root — trading one silent failure for another.
 
 The app **refuses to start** on a non-loopback address with no password, so this
 cannot be skipped by accident.

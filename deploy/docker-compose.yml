@@ -25,16 +25,30 @@ services:
       # The database. This is the irreplaceable one: captured option candles
       # cannot be downloaded again once the contracts expire.
       - kite-data:/data
-      # Config, read-only. live_confirm has no environment override by design,
-      # so a config file is required to ever enable real trading.
+      # Config and secrets are mounted as DIRECTORIES, not as individual files.
+      #
+      # A single-file bind mount is resolved to an inode when the container is
+      # created, and most editors save by writing a temporary file and renaming
+      # it over the original — a new inode. The container keeps the old one, so
+      # the file visibly changes on the host while the container goes on reading
+      # the previous contents, surviving `docker compose restart` and every
+      # other kind of restart short of recreating the container. That cost a
+      # debugging session: an edited config.yaml that the app kept ignoring.
+      #
+      # Mounting the directory resolves the path per access instead, so a
+      # replaced file is picked up the next time the process reads it.
+      #
       # :Z relabels for SELinux. On RHEL-family hosts (Rocky, Alma, CentOS)
       # SELinux is enforcing by default and a plain bind mount is denied inside
       # the container — the app fails to read its own config with a permission
       # error that says nothing about SELinux. Harmless on Debian/Ubuntu, where
       # the label is simply ignored.
-      - ./config.yaml:/etc/kite-algo/config.yaml:ro,Z
+      #
+      # live_confirm has no environment override by design, so a config file is
+      # required to ever enable real trading.
+      - ./conf:/etc/kite-algo:ro,Z
       # Kite credentials and the web password hash, read-only.
-      - ./secrets.yaml:/secrets/secrets.yaml:ro,Z
+      - ./secrets:/secrets:ro,Z
 
     environment:
       TRADING_SECRETS_PATH: /secrets/secrets.yaml
