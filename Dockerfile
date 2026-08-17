@@ -16,13 +16,13 @@ COPY . .
 # debug tables are dead weight there.
 RUN CGO_ENABLED=0 GOOS=linux go build \
         -trimpath -ldflags="-s -w" \
-        -o /out/trading ./cmd/trading
+        -o /out/tradebot ./cmd/trading
 
 
 # Runtime.
 #
 # Alpine rather than scratch/distroless on purpose. This is a self-hosted box
-# and the operator has to exec in at least once, to run `trading -set-password`
+# and the operator has to exec in at least once, to run `tradebot -set-password`
 # — an interactive prompt. A runtime with no shell turns that into an
 # awkward one-off container invocation for no security gain worth the trouble,
 # given the process is not internet-facing.
@@ -56,7 +56,7 @@ RUN adduser -D -u 10001 -h /home/trading trading \
  && mkdir -p /data \
  && chown -R trading:trading /data
 
-COPY --from=build /out/trading /usr/local/bin/trading
+COPY --from=build /out/tradebot /usr/local/bin/tradebot
 
 USER trading
 WORKDIR /home/trading
@@ -71,5 +71,5 @@ EXPOSE 8080
 ENV TZ=Asia/Kolkata
 
 # Config is mounted read-only at /etc/kite-algo/config.yaml.
-ENTRYPOINT ["/usr/local/bin/trading"]
+ENTRYPOINT ["/usr/local/bin/tradebot"]
 CMD ["-config", "/etc/kite-algo/config.yaml"]
