@@ -75,6 +75,24 @@ func (s *Server) liveData(r *http.Request) liveData {
 	return d
 }
 
+// markPageStale tells the browser that this action changed the PAGE, not just a
+// panel inside it, and that the response body is therefore not the whole story.
+//
+// Arming and disarming swap the entire live desk: the gate and the real ticket
+// are different branches of live.html, chosen server-side. app.js normally
+// renders an action's response into a result div and refreshes the polled
+// regions, which is right for placing an order and wrong for this — after a
+// disarm the page went on showing the LIVE banner and a real order ticket, with
+// the arming form nowhere to be seen, until someone reloaded by hand. The
+// engine refused those orders (handlePlaceLiveOrder re-checks LiveActive), so
+// nothing could reach the exchange, but a desk that displays REAL MONEY after
+// you have stood down is exactly the wrong thing to be wrong about.
+//
+// Must be called BEFORE the response is written; headers are frozen after that.
+func markPageStale(w http.ResponseWriter) {
+	w.Header().Set("X-Page-Stale", "1")
+}
+
 // handleLiveConfirm is the final gate: it installs live routing.
 //
 // Guarded by the same login limiter as the password form. Without that this is
@@ -108,6 +126,10 @@ func (s *Server) handleLiveConfirm(w http.ResponseWriter, r *http.Request) {
 	s.app.Guard.Succeed(ip)
 
 	s.log.Warn("LIVE ROUTING ARMED by operator", "ip", ip)
+	// Only on success: a refused attempt must keep its error message on screen
+	// rather than reloading it away, and the page is not stale in that case
+	// because nothing changed.
+	markPageStale(w)
 	s.actionResult(w, http.StatusOK, "ok",
 		"Live routing armed. Orders placed on this page now reach the exchange. "+
 			"Strategies remain simulated.")
@@ -121,6 +143,7 @@ func (s *Server) handleLiveConfirm(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLiveDisarm(w http.ResponseWriter, r *http.Request) {
 	s.app.DisarmLive(r.Context())
 	s.log.Warn("live routing disarmed by operator", "ip", s.clientIP(r))
+	markPageStale(w)
 	s.actionResult(w, http.StatusOK, "ok",
 		"Live routing disarmed. New manual orders are simulated again. "+
 			"Open positions are untouched.")

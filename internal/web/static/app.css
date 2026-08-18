@@ -767,6 +767,19 @@ details summary { cursor: pointer; }
 }
 .livedesk .gate { max-width: 520px; }
 
+/* The pre-arm chain sits under the gate at the gate's width, so the two read as
+   one column rather than a form with an unrelated table beside it. */
+.livedesk .chain-preview { max-width: 520px; margin-top: 12px; }
+
+/* Inert premium cells: still legible, visibly not a control. Cursor and hover
+   both go, or a dimmed cell that still lights up under the mouse reads as a
+   button that is merely broken. */
+.chain-cell:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+.chain-cell:disabled:hover { background: none; }
+
 .live-armed { border-color: var(--live); background: var(--live-tint); }
 .live-armed-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .live-armed-head .disarm { margin-left: auto; }

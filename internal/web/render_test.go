@@ -793,3 +793,127 @@ func TestSquareOffButtonsHiddenWhenABookIsFlat(t *testing.T) {
 		t.Error("paper square-off missing when paper positions are open")
 	}
 }
+
+// The live tab must show the market before it is armed.
+//
+// Opening /live used to render the arming form and nothing else, so the page was
+// useless for the decision it exists to support: whether to arm at all. The
+// chain is prices, not a control, so it renders — read-only, with no ticket
+// anywhere on the page.
+func TestUnarmedLiveDeskShowsAReadOnlyChain(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	// Live: true is what liveData really carries — it forces page=live before
+	// building the shared trade data — so this is the state a browser sees.
+	v := pageView{Status: app.Status{Mode: "live", LiveArmed: true}, CSRF: "x",
+		Data: liveData{
+			tradeData: tradeData{Live: true, LiveMode: false, Chain: engine.OptionChain{
+				Underlying: "NIFTY", SpotSymbol: "NIFTY 50", Spot: 24512,
+				Expiry:      time.Now().AddDate(0, 0, 3),
+				Expiries:    []time.Time{time.Now().AddDate(0, 0, 3)},
+				Underlyings: []string{"NIFTY"}, ATMStrike: 24500,
+				Rows: []engine.ChainRow{{
+					Strike: 24500,
+					Call:   engine.ChainLeg{TradingSymbol: "NIFTY25AUG24500CE", LastPrice: 120.5, LotSize: 75},
+					Put:    engine.ChainLeg{TradingSymbol: "NIFTY25AUG24500PE", LastPrice: 98.25, LotSize: 75},
+				}},
+			}},
+			Configured: true, Armed: false, SessionOK: true,
+		}}
+	if err := r.Render(w, 200, "live.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	// The prices are there.
+	if !strings.Contains(body, "NIFTY25AUG24500CE") {
+		t.Error("the unarmed live desk does not show the option chain")
+	}
+	if !strings.Contains(body, "120.50") {
+		t.Error("the chain renders without premiums")
+	}
+
+	// ...and cannot be traded from. Both premiums inert, and no ticket at all.
+	if strings.Count(body, "disabled") < 2 {
+		t.Error("premium cells are still clickable on an unarmed desk")
+	}
+	if strings.Contains(body, `action="/api/live/orders"`) {
+		t.Error("an unarmed live desk rendered a real order ticket")
+	}
+	if strings.Contains(body, "PLACE REAL ORDER") {
+		t.Error("an unarmed live desk offers to place a real order")
+	}
+
+	// The gate is still the first thing on the page, above the chain.
+	gate := strings.Index(body, "I UNDERSTAND")
+	chain := strings.Index(body, "NIFTY25AUG24500CE")
+	if gate < 0 || chain < 0 || gate > chain {
+		t.Error("the arming form is not above the chain")
+	}
+}
+
+// Armed, the same chain becomes a picker again — the cells load a contract into
+// the real ticket.
+func TestArmedLiveDeskChainIsClickable(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "live", LiveActive: true}, CSRF: "x",
+		Data: liveData{
+			tradeData: tradeData{Live: true, LiveMode: true, Chain: engine.OptionChain{
+				Underlying: "NIFTY", SpotSymbol: "NIFTY 50", Spot: 24512,
+				Expiry:      time.Now().AddDate(0, 0, 3),
+				Expiries:    []time.Time{time.Now().AddDate(0, 0, 3)},
+				Underlyings: []string{"NIFTY"}, ATMStrike: 24500,
+				Rows: []engine.ChainRow{{
+					Strike: 24500,
+					Call:   engine.ChainLeg{TradingSymbol: "NIFTY25AUG24500CE", LastPrice: 120.5, LotSize: 75},
+					Put:    engine.ChainLeg{TradingSymbol: "NIFTY25AUG24500PE", LastPrice: 98.25, LotSize: 75},
+				}},
+			}},
+			Configured: true, Armed: true, SessionOK: true,
+		}}
+	if err := r.Render(w, 200, "live.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	if !strings.Contains(body, "load into the ticket") {
+		t.Error("the armed chain does not offer to load a contract into the ticket")
+	}
+	if strings.Contains(body, "arm live routing to trade it") {
+		t.Error("the armed chain still renders its read-only cells")
+	}
+}
+
+// ChainReadOnly is derived rather than passed in, so the polled fragment agrees
+// with the page that spawned it. The truth table is small and load-bearing: get
+// it wrong in one direction and the live desk shows a dead chain when it is
+// armed, in the other and it offers contracts it cannot trade.
+func TestChainReadOnlyTruthTable(t *testing.T) {
+	cases := []struct {
+		name string
+		d    tradeData
+		want bool
+	}{
+		{"paper terminal is a picker", tradeData{Live: false, LiveMode: false}, false},
+		{"live desk before arming is read-only", tradeData{Live: true, LiveMode: false}, true},
+		{"live desk once armed is a picker", tradeData{Live: true, LiveMode: true}, false},
+		// LiveMode without Live cannot arise from a real request — the live desk
+		// is the only page that sets Live — but the paper terminal must stay a
+		// picker regardless of what routing is doing elsewhere.
+		{"paper terminal while live is armed", tradeData{Live: false, LiveMode: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.d.ChainReadOnly(); got != tc.want {
+				t.Errorf("ChainReadOnly() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -73,6 +73,25 @@
     <div id="live-result" aria-live="polite"></div>
   </div>
 
+  {{/* The chain, below the gate and read-only.
+
+       Opening the live tab used to show nothing but the arming form, which made
+       the desk useless for the thing you actually do first: look at the market
+       and decide whether to arm at all. The chain is only prices, so there is no
+       reason to gate it — what is gated is the ticket, which this branch still
+       does not render. Premium cells are inert here (ChainReadOnly), so there is
+       nothing to click that could imply an order is possible yet.
+
+       Below the form rather than above it: arming is the action this page exists
+       for and it must stay at the top, not be pushed under twenty strikes. */}}
+  <section class="card chain-preview">
+    <h2>Option chain</h2>
+    <div data-poll="{{.Data.ChainPollURL}}"
+         data-poll-ms="15000">
+      {{template "option_chain" .}}
+    </div>
+  </section>
+
 {{else}}
   <div class="card live-armed">
     <div class="live-armed-head">

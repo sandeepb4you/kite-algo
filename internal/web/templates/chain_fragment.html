@@ -11,6 +11,12 @@
 {{define "option_chain"}}
 {{$c := .Data.Chain}}
 {{$exp := $c.Expiry.Format "2006-01-02"}}
+{{/* The live desk shows the chain before routing is armed, so the market can be
+     watched while deciding whether to arm. That page has no ticket on it, so a
+     premium has nothing to load a contract into: the cells stay visible and stop
+     being buttons. Disabled rather than rendered as plain cells, so there is one
+     chain markup rather than two that can drift. */}}
+{{$ro := .Data.ChainReadOnly}}
 
 {{/* Submits back to the page it is rendered on, so picking a contract on
      the live desk keeps you on the live desk. */}}
@@ -78,7 +84,8 @@
           <button type="submit" name="symbol" value="{{.Call.TradingSymbol}}"
                   class="chain-cell"
                   data-lot="{{.Call.LotSize}}"
-                  title="{{.Call.TradingSymbol}} — load into the ticket">
+                  {{if $ro}}disabled title="{{.Call.TradingSymbol}} — arm live routing to trade it"
+                  {{else}}title="{{.Call.TradingSymbol}} — load into the ticket"{{end}}>
             <span data-ltp="{{.Call.TradingSymbol}}">{{num .Call.LastPrice}}</span>
           </button>
         </td>
@@ -89,7 +96,8 @@
           <button type="submit" name="symbol" value="{{.Put.TradingSymbol}}"
                   class="chain-cell"
                   data-lot="{{.Put.LotSize}}"
-                  title="{{.Put.TradingSymbol}} — load into the ticket">
+                  {{if $ro}}disabled title="{{.Put.TradingSymbol}} — arm live routing to trade it"
+                  {{else}}title="{{.Put.TradingSymbol}} — load into the ticket"{{end}}>
             <span data-ltp="{{.Put.TradingSymbol}}">{{num .Put.LastPrice}}</span>
           </button>
         </td>
@@ -101,7 +109,8 @@
 </form>
 
 <p class="muted small">
-  Click any premium to load that contract into the ticket.
+  {{if $ro}}Prices only — arm live routing above to trade these contracts.
+  {{else}}Click any premium to load that contract into the ticket.{{end}}
   {{if $c.Truncated}}Showing {{len $c.Rows}} strikes around the money.{{end}}
   {{if not .Data.Streaming}}<b class="warn">Market data is not streaming — prices are last known.</b>{{end}}
 </p>

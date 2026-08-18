@@ -409,6 +409,20 @@ func (d tradeData) OrderAction() string {
 	return "/api/orders"
 }
 
+// ChainReadOnly reports whether the chain must render as a view rather than a
+// picker.
+//
+// The live desk shows the chain before routing is armed, so the market can be
+// watched while deciding — but that page has no ticket on it, so a premium
+// there has nothing to load a contract into and must not look clickable.
+//
+// Derived, like OrderAction and PageURL, rather than passed in: the chain
+// re-renders from the polled fragment every 15 seconds, and that request builds
+// its own tradeData. A flag set only by the page would be lost on the first
+// poll and the cells would quietly become live buttons on a page with no
+// ticket. Recomputing from the same two facts makes both paths agree.
+func (d tradeData) ChainReadOnly() bool { return d.Live && !d.LiveMode }
+
 // PositionsPollURL, OrdersPollURL and ChainPollURL are the fragment URLs the
 // page polls.
 //

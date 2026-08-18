@@ -99,6 +99,10 @@
         var button = form.querySelector("button[type=submit]");
         if (button) { button.disabled = true; }
 
+        // Set from the response, read in the next step: an action that changed
+        // the whole page cannot be shown by patching one div inside it.
+        var stale = false;
+
         fetch(form.action, {
           method: form.method || "POST",
           body: new FormData(form),
@@ -106,10 +110,19 @@
         })
           .then(function (r) {
             if (r.status === 401) { location.href = "/login"; return null; }
+            stale = r.headers.get("X-Page-Stale") === "1";
             return r.text();
           })
           .then(function (html) {
             if (html === null) return;
+            // Arming and disarming the live desk replace the page, not a panel
+            // of it: the gate and the real ticket are different server-rendered
+            // branches. Reload so the controls on screen match what the server
+            // will actually accept. The banner text is dropped, which is the
+            // right trade — the reloaded page states the new state far more
+            // plainly than a line of text could, and continuing to display a
+            // REAL MONEY ticket after a disarm is the failure worth avoiding.
+            if (stale) { location.reload(); return; }
             target.innerHTML = html;
             // Refresh the order and position tables straight away rather than
             // waiting for the next poll.

@@ -343,3 +343,61 @@ func TestInstrumentSearchWithoutMaster(t *testing.T) {
 		t.Errorf("content type = %q, want JSON", ct)
 	}
 }
+
+// Disarming must tell the browser to re-render the page, not just patch a div.
+//
+// The disarm form posts through app.js, which renders the response into a result
+// element and refreshes the polled panels. Neither covers this: the gate and the
+// armed desk are different branches of live.html chosen on the server, so the
+// page went on showing the LIVE — REAL MONEY banner, a real order ticket, and no
+// arming form until someone reloaded by hand. handlePlaceLiveOrder re-checks
+// LiveActive so nothing could actually be routed, but a desk that still says
+// REAL MONEY after you have stood down is the wrong thing to be wrong about.
+func TestDisarmingTellsThePageToReload(t *testing.T) {
+	ts, _ := newTestServer(t)
+	client := loginClient(t, ts)
+	token := csrfFor(t, ts, client)
+
+	resp, err := client.PostForm(ts.URL+"/api/live/disarm", url.Values{"_csrf": {token}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden {
+		t.Fatal("a valid session token was rejected as CSRF")
+	}
+
+	if got := resp.Header.Get("X-Page-Stale"); got != "1" {
+		t.Errorf("disarm response X-Page-Stale = %q, want \"1\" — "+
+			"without it the page keeps showing the armed desk and never re-asks for the password", got)
+	}
+}
+
+// A refused arming attempt must NOT reload: the reload would discard the reason
+// it was refused, leaving a wrong phrase or password looking like a page that
+// simply blinked. Nothing changed, so nothing is stale.
+func TestRefusedArmingKeepsItsErrorOnScreen(t *testing.T) {
+	ts, _ := newTestServer(t)
+	client := loginClient(t, ts)
+	token := csrfFor(t, ts, client)
+
+	// The harness runs in dry-run, so this is refused on the configuration gate
+	// before the phrase is even considered — a refusal either way.
+	resp, err := client.PostForm(ts.URL+"/api/live/confirm", url.Values{
+		"_csrf":    {token},
+		"phrase":   {"I UNDERSTAND"},
+		"password": {testPassword},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body := readAll(t, resp)
+
+	if resp.Header.Get("X-Page-Stale") != "" {
+		t.Error("a refused arming attempt asked the page to reload, discarding its own error message")
+	}
+	if !strings.Contains(strings.ToLower(body), "live") {
+		t.Errorf("refusal did not explain itself: %s", body)
+	}
+}
