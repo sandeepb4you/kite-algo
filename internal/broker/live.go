@@ -20,17 +20,34 @@ type LiveBroker struct {
 	logger *slog.Logger
 	now    func() time.Time
 
+	// marketProtection is the band sent with MARKET orders. -1 means Zerodha
+	// picks. See NewLiveBroker for why this cannot be zero.
+	marketProtection float64
+
 	mu       sync.Mutex
 	idToExch map[string]string // internal order id -> Kite exchange order id
 }
 
 // NewLiveBroker wraps an authenticated kite.Client.
-func NewLiveBroker(client *kite.Client, logger *slog.Logger) *LiveBroker {
+//
+// marketProtection is the percentage band applied to MARKET orders; pass -1 for
+// Zerodha's automatic band, which is what the Kite web UI uses. A zero is
+// corrected to -1 rather than sent: the exchanges mandate market protection on
+// algo market orders and Kite refuses a MARKET order that arrives without one
+// ("Market orders not allowed without market protection"), so a zero here would
+// silently disable every market order on the real book — including the
+// square-offs behind the panic button and the expiry-day sweep, which are the two
+// places a refusal is least affordable.
+func NewLiveBroker(client *kite.Client, logger *slog.Logger, marketProtection float64) *LiveBroker {
+	if marketProtection == 0 || marketProtection < -1 || marketProtection > 100 {
+		marketProtection = -1
+	}
 	return &LiveBroker{
-		client:   client,
-		logger:   logger,
-		now:      time.Now,
-		idToExch: make(map[string]string),
+		client:           client,
+		logger:           logger,
+		now:              time.Now,
+		marketProtection: marketProtection,
+		idToExch:         make(map[string]string),
 	}
 }
 
@@ -55,6 +72,8 @@ func (b *LiveBroker) PlaceOrder(ctx context.Context, req OrderRequest) (*Order, 
 		TriggerPrice:    req.TriggerPrice,
 		Validity:        string(orValidity(req.Validity, ValidityDay)),
 		Tag:             req.Tag,
+		// Ignored by Kite for LIMIT and SL; required for MARKET and SL-M.
+		MarketProtection: b.marketProtection,
 	}
 	res, err := b.client.PlaceOrder(ctx, params)
 	if err != nil {

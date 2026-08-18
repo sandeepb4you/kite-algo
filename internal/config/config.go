@@ -42,13 +42,14 @@ type Config struct {
 	// credentials OUTSIDE the repo. Defaults to ~/.trading/secrets.yaml. Values
 	// in the secrets file override config.yaml; env vars override both. Set to
 	// "" to disable.
-	SecretsPath string        `yaml:"secrets_path"`
-	Recording   RecordConfig  `yaml:"recording"`
-	Capture     CaptureConfig `yaml:"capture"`
-	Storage     StorageConfig `yaml:"storage"`
-	Risk        RiskConfig    `yaml:"risk"`
-	Web         WebConfig     `yaml:"web"`
-	Strategies  []StrategyCfg `yaml:"strategies"`
+	SecretsPath string `yaml:"secrets_path"`
+
+	Recording  RecordConfig  `yaml:"recording"`
+	Capture    CaptureConfig `yaml:"capture"`
+	Storage    StorageConfig `yaml:"storage"`
+	Risk       RiskConfig    `yaml:"risk"`
+	Web        WebConfig     `yaml:"web"`
+	Strategies []StrategyCfg `yaml:"strategies"`
 
 	// fileMissing records that no config file was found, so startup can say so
 	// rather than leaving the operator to wonder why their settings had no effect.
@@ -125,6 +126,15 @@ type KiteConfig struct {
 	AccessToken string `yaml:"access_token"`
 	BaseURL     string `yaml:"base_url"`
 	TickerURL   string `yaml:"ticker_url"`
+	// MarketProtection is the band applied to MARKET orders, as a percentage.
+	// -1 (the default) asks Zerodha to apply its own automatic protection, which
+	// is what the Kite web UI does.
+	//
+	// Required rather than optional: the exchanges mandate it on algo market
+	// orders and Kite rejects a MARKET order sent without one, so a zero here
+	// means no market order — including a square-off — can reach the exchange.
+	MarketProtection float64 `yaml:"market_protection"`
+
 	// APIKeyHeader is the HTTP header name Kite expects for the API key.
 	APIKeyHeader string `yaml:"-"`
 }
@@ -432,6 +442,14 @@ func (c *Config) applyDefaults() {
 	// MaxOrderValue have always behaved this way, so this makes all four agree.
 	if c.Web.Addr == "" {
 		c.Web.Addr = "127.0.0.1:8080"
+	}
+	// -1 means "let Zerodha choose", which is the right default: it matches the
+	// Kite UI and needs no tuning. A configured 0 is treated as unset because
+	// Kite rejects 0 outright — honouring it literally would disable market
+	// orders while looking like a deliberate setting.
+	if c.Kite.MarketProtection == 0 || c.Kite.MarketProtection < -1 ||
+		c.Kite.MarketProtection > 100 {
+		c.Kite.MarketProtection = -1
 	}
 	if c.Web.SessionTTL == 0 {
 		c.Web.SessionTTL = 30 * 24 * time.Hour

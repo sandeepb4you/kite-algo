@@ -29,6 +29,17 @@ type PlaceOrderParams struct {
 	Validity          string  // DAY | IOC
 	DisclosedQuantity int
 	Tag               string
+
+	// MarketProtection caps how far from the last price a MARKET order may fill,
+	// as a percentage. -1 asks Zerodha for its own automatic band.
+	//
+	// Not optional in practice. The exchanges require it on algo MARKET orders,
+	// and Kite rejects a MARKET order that arrives without one — "Market orders
+	// not allowed without market protection" — so omitting this field means no
+	// market order can be placed at all on the real book. Zero must never be
+	// sent: Kite rejects that explicitly, which is why setFloat skipping zero is
+	// load-bearing here rather than incidental.
+	MarketProtection float64
 }
 
 // OrderResult is the minimal response from place/modify/cancel.
@@ -152,6 +163,12 @@ func paramsToForm(p PlaceOrderParams) url.Values {
 	setStr(f, "validity", p.Validity)
 	setInt(f, "disclosed_quantity", p.DisclosedQuantity)
 	setStr(f, "tag", p.Tag)
+	// Only MARKET and SL-M take market protection. LIMIT and SL carry their own
+	// price bound, and Kite documents the parameter as having no effect on them;
+	// gated here rather than at the call site so no caller can get it wrong.
+	if p.OrderType == "MARKET" || p.OrderType == "SL-M" {
+		setFloat(f, "market_protection", p.MarketProtection)
+	}
 	return f
 }
 

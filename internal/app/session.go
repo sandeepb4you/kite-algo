@@ -560,5 +560,5 @@ func (s *KiteSession) LiveBrokerFor() (broker.Broker, error) {
 	if state != StateActive {
 		return nil, fmt.Errorf("cannot go live: Zerodha session is %s", state)
 	}
-	return broker.NewLiveBroker(client, s.logger), nil
+	return broker.NewLiveBroker(client, s.logger, s.cfg.Kite.MarketProtection), nil
 }

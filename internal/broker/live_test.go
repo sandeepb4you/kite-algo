@@ -125,7 +125,7 @@ func TestLiveGetPositionsKeepsFlatRows(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	b := NewLiveBroker(kite.New("k", "s", "token", srv.URL, nil), nil)
+	b := NewLiveBroker(kite.New("k", "s", "token", srv.URL, nil), nil, -1)
 	got, err := b.GetPositions(context.Background())
 	if err != nil {
 		t.Fatalf("GetPositions: %v", err)
