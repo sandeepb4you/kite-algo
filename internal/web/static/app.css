@@ -232,6 +232,11 @@ main { padding: 20px 16px; max-width: 1560px; margin: 0 auto; }
   text-align: right;
 }
 
+/* The ticket's live LTP. Hidden until a contract is chosen: "LTP —" above an
+   empty instrument field is a row of furniture, and the ticket is already tall. */
+.ticket-ltp { margin: 2px 0 0; }
+.ticket-ltp.is-empty { display: none; }
+
 /* The chain reflows worst of all: premiums on both sides of the strike change
    together, so the strike column itself walks left and right under the cursor
    while you are aiming at a premium to click. */

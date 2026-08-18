@@ -189,6 +189,91 @@
     }
   });
 
+  // --- ticket price ---------------------------------------------------------
+  //
+  // A LIMIT order needs a price, and the price a discretionary trader wants is
+  // almost always "where it is trading now, or a tick either side of it". Leaving
+  // the field blank means reading the premium off the chain and retyping it — into
+  // an order that on the live desk spends real money, at a moment when the number
+  // being copied is changing several times a second. Typing 12.50 for 125.0 is one
+  // slip.
+  //
+  // The ticket streams its own LTP instead. #ticket-ltp carries a data-ltp
+  // attribute, which is how ws.js discovers what to subscribe to, so pointing it
+  // at the ticket's symbol is enough to keep it live — no new socket plumbing, and
+  // it stays correct when a poll replaces the chain underneath.
+
+  // ORDER TYPES THAT TAKE A LIMIT PRICE. SL is here too: it needs both a trigger
+  // and a limit, and an SL with an empty price is rejected the same way.
+  var LIMIT_TYPES = { LIMIT: true, SL: true };
+
+  function ticketLTP() {
+    var el = document.getElementById("ticket-ltp");
+    if (!el) return 0;
+    var v = parseFloat((el.textContent || "").replace(/,/g, ""));
+    return isFinite(v) && v > 0 ? v : 0;
+  }
+
+  // trackTicketPrice repoints the ticket's price cell at a new symbol.
+  //
+  // cell is the chain button that was clicked, when there was one: it already
+  // holds the rendered premium, so the readout is correct immediately rather than
+  // blank until the next tick — which on an illiquid strike can be a while.
+  function trackTicketPrice(symbol, cell) {
+    var el = document.getElementById("ticket-ltp");
+    if (!el) return;
+
+    if (el.getAttribute("data-ltp") !== symbol) {
+      el.setAttribute("data-ltp", symbol);
+      el.textContent = "—";
+      // Tell ws.js to re-derive its subscriptions, so this symbol starts
+      // streaming even if it is not on screen anywhere else.
+      document.body.dispatchEvent(new CustomEvent("fragment-swapped"));
+    }
+    if (cell) {
+      var shown = parseFloat((cell.textContent || "").replace(/,/g, ""));
+      if (isFinite(shown) && shown > 0) el.textContent = shown.toFixed(2);
+    }
+    var wrap = el.closest ? el.closest(".ticket-ltp") : null;
+    if (wrap) wrap.classList.toggle("is-empty", !symbol);
+
+    // Keep an already-chosen LIMIT price in step with the new contract, rather
+    // than leaving the previous strike's premium sitting in the field.
+    fillLimitPrice(true);
+  }
+
+  // fillLimitPrice copies the live LTP into the price field.
+  //
+  // replace=false only fills an EMPTY field, so a price the operator typed
+  // themselves is never overwritten by a later tick or a re-selection: the whole
+  // point of a limit order is that the number is theirs.
+  function fillLimitPrice(replace) {
+    var type = document.getElementById("order_type");
+    var price = document.getElementById("price");
+    if (!type || !price) return;
+
+    if (!LIMIT_TYPES[type.value]) return;
+    if (!replace && price.value.trim() !== "") return;
+
+    var ltp = ticketLTP();
+    if (ltp > 0) price.value = ltp.toFixed(2);
+  }
+
+  document.addEventListener("change", function (ev) {
+    if (ev.target && ev.target.id === "order_type") {
+      // Selecting LIMIT is the request for a price. Selecting MARKET is not, and
+      // must not clear a price the operator may switch back to.
+      fillLimitPrice(false);
+    }
+  });
+
+  // A hand-typed or autocompleted symbol gets the same treatment as a chain pick.
+  document.addEventListener("change", function (ev) {
+    if (ev.target && ev.target.id === "symbol") {
+      trackTicketPrice(ev.target.value.trim().toUpperCase(), null);
+    }
+  });
+
   // --- option chain → order ticket ----------------------------------------
   //
   // Clicking a premium loads that contract into the ticket. Typing an option
@@ -206,6 +291,7 @@
     var input = document.getElementById("symbol");
     if (!input) return false; // no ticket on this page: let the form submit
     input.value = symbol;
+    trackTicketPrice(symbol, cell);
 
     // Show the lot size so the operator can see what one lot means here.
     var hint = document.getElementById("lot-hint");

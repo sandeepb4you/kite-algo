@@ -985,3 +985,60 @@ func TestDashboardSummaryNamesASwitchedOffCap(t *testing.T) {
 		t.Error("dashboard does not name the disabled caps")
 	}
 }
+
+// The ticket must stream its own price, and offer it as the LIMIT price.
+//
+// data-ltp is how ws.js discovers what to subscribe to, so the attribute is not
+// decoration — without it the readout never updates and selecting LIMIT has
+// nothing to copy, leaving the operator retyping a premium off the chain into an
+// order that spends real money.
+func TestTicketCarriesALivePriceCell(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "paper"}, CSRF: "x", Data: tradeData{
+		TicketSymbol: "NIFTY25AUG24500CE",
+		TicketLot:    75,
+		TicketPrice:  120.5,
+	}}
+	if err := r.Render(w, 200, "trade.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	if !strings.Contains(body, `id="ticket-ltp"`) {
+		t.Error("the ticket has no price cell for the limit price to be read from")
+	}
+	if !strings.Contains(body, `data-ltp="NIFTY25AUG24500CE"`) {
+		t.Error("the ticket's price cell is not subscribed to the ticket's symbol")
+	}
+	// Server-rendered, so a LIMIT chosen before the first tick still has a price.
+	if !strings.Contains(body, "120.50") {
+		t.Errorf("the ticket does not show the contract's current price:\n%s", body)
+	}
+}
+
+// With no contract chosen the readout is suppressed rather than showing a dash
+// above an empty instrument field.
+func TestEmptyTicketHidesThePriceCell(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "paper"}, CSRF: "x", Data: tradeData{}}
+	if err := r.Render(w, 200, "trade.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	if !strings.Contains(body, "ticket-ltp is-empty") {
+		t.Error("the price readout is shown with no contract selected")
+	}
+	// An empty data-ltp must not become a subscription for the symbol "".
+	if strings.Contains(body, `data-ltp=""`) && !strings.Contains(body, "is-empty") {
+		t.Error("empty symbol would be subscribed to")
+	}
+}

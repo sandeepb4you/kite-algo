@@ -96,6 +96,18 @@
              autocomplete="off" spellcheck="false" required
              placeholder="click a premium in the chain, or type a symbol">
       <datalist id="instrument-list"></datalist>
+      {{/* Live LTP for whatever is in the ticket.
+
+           data-ltp is how a price cell declares itself: ws.js derives its
+           subscription set from every element carrying one, so putting the
+           ticket's symbol here makes the ticket stream its own price without any
+           new plumbing. It is also where the LIMIT price is read from — selecting
+           LIMIT copies this number into the price field, which is otherwise a
+           blank box the operator fills by reading the chain and retyping. */}}
+      <p class="muted small ticket-ltp{{if not .Data.TicketSymbol}} is-empty{{end}}">
+        LTP <b class="mono" id="ticket-ltp"
+                data-ltp="{{.Data.TicketSymbol}}">{{if .Data.TicketPrice}}{{num .Data.TicketPrice}}{{else}}—{{end}}</b>
+      </p>
       <p id="lot-hint" class="muted small">
         {{if .Data.TicketLot}}
           Lot size {{.Data.TicketLot}} — 1 lot = {{.Data.TicketLot}} qty.

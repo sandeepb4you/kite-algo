@@ -40,6 +40,10 @@ type tradeData struct {
 	// server-side — no JavaScript required.
 	TicketSymbol string
 	TicketLot    int
+	// TicketPrice is the last traded price of the ticket's contract, so the
+	// server-rendered page already shows one and a LIMIT order selected before
+	// the first tick arrives still has a price to offer.
+	TicketPrice float64
 }
 
 // handleTrade renders the manual trading terminal.
@@ -84,6 +88,7 @@ func (s *Server) tradeData(r *http.Request) tradeData {
 	if sym := strings.ToUpper(strings.TrimSpace(r.FormValue("symbol"))); sym != "" {
 		d.TicketSymbol = sym
 		d.TicketLot = s.app.Engine.LotSize(sym)
+		d.TicketPrice = s.app.Engine.Prices()[sym]
 	}
 
 	underlying := strings.ToUpper(strings.TrimSpace(r.FormValue("underlying")))
