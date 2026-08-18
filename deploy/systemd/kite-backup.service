@@ -1,0 +1,30 @@
+# Nightly backup of the kite-algo database.
+#
+# Type=oneshot: the timer starts it, it runs to completion, systemd records the
+# result. Failures are visible in `systemctl status kite-backup` and are also
+# pushed to Telegram by the script itself — the unit state alone is not enough,
+# because nobody reads unit states on a box that is working.
+[Unit]
+Description=kite-algo database backup
+Documentation=file:///opt/kite-algo/deploy/README.md
+# Docker must be up: the backup runs through the app image.
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/kite-algo/deploy
+ExecStart=/opt/kite-algo/deploy/backup.sh
+
+# Where the copies go, and how long they live. Override by editing this file, or
+# with `systemctl edit kite-backup`.
+Environment=KITE_BACKUP_DIR=/var/backups/kite-algo
+Environment=KITE_BACKUP_KEEP_DAYS=14
+Environment=KITE_BACKUP_KEEP_MONTHLY_DAYS=365
+
+# The script waits on a VACUUM INTO of a database that grows every trading day, so
+# no default timeout that a large database would eventually cross silently.
+TimeoutStartSec=45min
+
+[Install]
+WantedBy=multi-user.target

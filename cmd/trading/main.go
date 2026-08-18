@@ -66,6 +66,11 @@ func run() error {
 			"recent trading day) and exit; requires a persisted Zerodha session")
 	notifyTest := flag.Bool("notify-test", false,
 		"send a test message to the configured alert channel and exit")
+	notifySend := flag.String("notify-send", "",
+		"send this message to the configured alert channel and exit "+
+			"(used by the backup job to report its own failures)")
+	backupTo := flag.String("backup", "",
+		"write a verified, compacted copy of the database to this path and exit")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -94,6 +99,16 @@ func run() error {
 	// still broken.
 	if *notifyTest {
 		return sendTestAlert(cfg, log)
+	}
+	if *notifySend != "" {
+		return sendAlert(cfg, log, *notifySend)
+	}
+
+	// Before the engine, the web server and the network: a backup must be
+	// runnable on a box where the rest is broken, which is exactly when someone
+	// reaches for one.
+	if *backupTo != "" {
+		return runBackup(cfg, log, *backupTo)
 	}
 
 	log.Info("=== trading platform starting ===",
@@ -451,6 +466,52 @@ func sendTestAlert(cfg *config.Config, log *slog.Logger) error {
 	}
 	log.Info("test alert delivered", "chat_id", t.ChatID)
 	fmt.Println("sent — check Telegram")
+	return nil
+}
+
+// sendAlert pushes one message to the configured channel and exits.
+//
+// This exists so the backup job can report its own failure through the same
+// channel as everything else. The alternative was parsing YAML in shell to find a
+// bot token, which is both fragile and a second place the credential is read.
+func sendAlert(cfg *config.Config, log *slog.Logger, msg string) error {
+	t := cfg.Notify.Telegram
+	tg := notify.NewTelegram(t.BotToken, t.ChatID, log)
+	if !tg.Configured() {
+		// Not an error. A backup job on a box with no alert channel configured
+		// must still back up, and must not fail because it could not narrate.
+		log.Warn("no alert channel configured; message not sent", "message", msg)
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := tg.Send(ctx, msg); err != nil {
+		return err
+	}
+	log.Info("alert sent", "chars", len(msg))
+	return nil
+}
+
+// runBackup writes a verified copy of the database and reports what it contains.
+//
+// The counts in the summary are the point of it. "Backup complete" says a file was
+// written; "412 snapshot days, 3.1M candles" says how much of the irreplaceable
+// data is actually in there, which is the only version of the claim worth trusting
+// — an empty database backs up perfectly and passes every structural check.
+func runBackup(cfg *config.Config, log *slog.Logger, dest string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	res, err := sqlite.BackupInto(ctx, cfg.Storage.SQLitePath, dest)
+	if err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	log.Info("backup complete",
+		"path", res.Path, "bytes", res.Bytes,
+		"snapshot_days", res.SnapshotDays, "candles", res.Candles,
+		"took", res.Took.Round(time.Millisecond))
+	fmt.Println(res.Summary())
 	return nil
 }
 

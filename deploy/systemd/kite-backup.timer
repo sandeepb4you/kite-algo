@@ -1,0 +1,27 @@
+# Fires the backup nightly.
+#
+# 20:30 UTC = 02:00 IST. Written in UTC on purpose: OnCalendar only gained
+# timezone suffixes in newer systemd, and a timer that silently runs at the wrong
+# hour because the host clock is UTC is exactly the kind of quiet wrongness this
+# deployment has been bitten by before. The hour matters only in that the market
+# is closed and the app is idle — the copy is safe during trading anyway.
+[Unit]
+Description=Nightly kite-algo database backup
+Documentation=file:///opt/kite-algo/deploy/README.md
+
+[Timer]
+OnCalendar=*-*-* 20:30:00 UTC
+
+# Run on boot if the box was off when the timer was due. A missed night is a
+# night of irreplaceable data protected only by the previous copy.
+Persistent=true
+
+# Spread the start slightly, so a backup never begins at the same instant as
+# whatever else the host schedules on the hour.
+RandomizedDelaySec=5min
+
+# Once a week, report SUCCESS as well as failure. Silence is ambiguous — it reads
+# identically to a timer that was never enabled — so the channel says something
+# at least weekly and its absence becomes informative.
+[Install]
+WantedBy=timers.target

@@ -298,6 +298,100 @@ refuses messages to a user who has never started it.
 capture scope silently falls back to defaults instead of your configured
 underlyings, expiries and strike range.
 
+## Backups
+
+The database holds every captured option candle and every daily instrument
+snapshot. Kite lists only LIVE contracts and keys historical candles by
+instrument token, so an expired weekly's price history cannot be re-fetched at any
+price. Everything else in the file is reconstructible; this is not.
+
+### Install
+
+```sh
+cd /opt/kite-algo/deploy
+sudo cp systemd/kite-backup.service systemd/kite-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kite-backup.timer
+```
+
+Check it took, and when it next runs:
+
+```sh
+systemctl list-timers kite-backup.timer
+```
+
+Then force one immediately rather than waiting for the night:
+
+```sh
+sudo systemctl start kite-backup.service
+journalctl -u kite-backup -n 30 --no-pager
+ls -lh /var/backups/kite-algo/
+```
+
+### What it does
+
+`backup.sh` runs `tradebot -backup`, which issues `VACUUM INTO` through the app's
+own SQLite driver. Not a file copy: the database runs in WAL mode, so the `-wal`
+file holds committed pages the main file does not have yet, and copying
+`trading.db` alone yields a database silently missing recent transactions. VACUUM
+INTO takes a read snapshot and writes a defragmented copy, safe against a live
+writer — so this is safe to run during market hours, though the timer runs at
+02:00 IST when the app is idle anyway.
+
+The copy is then **verified before it counts**: `PRAGMA quick_check`, plus a count
+of snapshot days and candles. An empty database passes every structural check, so
+the counts are the only version of "the backup worked" worth trusting. They appear
+in the log line and in the weekly report.
+
+Then gzip -9, then rotation: 14 dailies, plus the 1st-of-month copies kept for a
+year. Dailies cover the ordinary case where something broke recently. The monthlies
+cover what dailies cannot — corruption or a bad delete noticed weeks later, when
+every surviving daily already contains the damage.
+
+### Reporting
+
+Failures go to Telegram, always. Successes go once a week (Sundays), because a
+channel that only ever speaks on failure cannot be told apart from a broken one,
+while a message every morning is noise that gets the channel muted — taking the
+real alerts with it. `--report` forces a success message for a manual run.
+
+There is also a `.last-success` marker in the backup directory, and
+`systemctl list-timers` for the timer itself.
+
+### Sizing
+
+Measured on 134 MB of real data: the compacted copy was 126 MB and gzipped to
+**17 MB, a 7.4x ratio**, in about 9 seconds. Growth is roughly 40 MB of database
+per trading day, dominated by `instrument_snapshots` — the whole NFO+BFO master,
+written once a day with two indexes on it — not by the candles.
+
+That means each nightly copy grows with the database, and 26 retained full copies
+of a multi-gigabyte database is tens of GB by year end. Three ways to handle it:
+
+- lower `KITE_BACKUP_KEEP_DAYS` in the unit file;
+- point `KITE_BACKUP_DIR` at a bigger or separate disk;
+- or store the copies with `restic` or `borg`, which dedupe at block level, so N
+  nightly copies of a mostly append-only database cost roughly one copy plus the
+  daily deltas.
+
+Check headroom with `df -h /var/backups/kite-algo`. The job warns through Telegram
+below 2 GB free rather than waiting to fail.
+
+### Restoring
+
+```sh
+gunzip -c /var/backups/kite-algo/trading-2026-08-19.db.gz > /tmp/restored.db
+docker compose stop app
+docker run --rm -v deploy_kite-data:/data -v /tmp:/in alpine:3.20   cp /in/restored.db /data/trading.db
+docker compose start app
+```
+
+Stop the app first. Replacing the file under a running process leaves it holding a
+deleted inode and writing to nothing. Confirm the volume name with
+`docker volume ls | grep kite-data` — it is prefixed with the compose project name.
+
+---
+
 ## Going live
 
 Real orders need all of this, in order:
@@ -313,19 +407,9 @@ simulated by construction — there is no config value that changes that.
 
 ## Two things this setup does not do
 
-**No backups.** `deploy/config.yaml` puts the database on the `kite-data`
-volume, and nothing copies it anywhere else. The captured option candles are
-the one thing here that cannot be rebuilt: once a weekly contract expires, its
-history is not purchasable from Kite at any price. A nightly job would be:
-
-```sh
-docker compose exec -T app sh -c \
-  'sqlite3 /data/trading.db ".backup /tmp/b.db"' && \
-docker compose cp app:/tmp/b.db "./backup-$(date +%F).db"
-```
-
-(that needs `sqlite3` in the image, which is not currently installed — say the
-word and I will add it and a timer.)
+**Backups run nightly.** See the Backups section below. The database is the one
+thing here that cannot be rebuilt: once a weekly contract expires, its history is
+not purchasable from Kite at any price.
 
 **An IP allowlist breaks when your address changes.** Residential ISPs rotate
 addresses. When yours does you are locked out of your own trading UI, possibly
