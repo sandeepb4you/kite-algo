@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"kite-algo/internal/broker"
@@ -161,15 +162,41 @@ func TestDisarmReturnsManualToPaper(t *testing.T) {
 // recoverable; an unauthorised real one is not.
 func TestManualFallsBackToPaperWhenLiveIsAbsent(t *testing.T) {
 	eng, _, _ := routingEngine(t)
-	b, book := eng.brokerFor(wantReal(ManualStrategyID, "X"))
+
+	// bookFor is where the fallback happens, and it must happen there: a NEW
+	// order with nowhere real to go is simulated rather than refused.
+	book := eng.bookFor(wantReal(ManualStrategyID, "X"))
 	if book != broker.BookPaper {
 		t.Errorf("book = %q, want paper", book)
+	}
+	b, err := eng.brokerForBook(book)
+	if err != nil {
+		t.Fatalf("brokerForBook(paper): %v", err)
 	}
 	if b == nil {
 		t.Fatal("no broker returned")
 	}
 	if b.Mode() == "live" {
 		t.Error("routed live with no live broker installed")
+	}
+}
+
+// Asking for the REAL book with no live broker must fail, not fall back.
+//
+// The opposite direction from the test above, and deliberately so. A new order
+// with nowhere real to go should be simulated; a request to CLOSE a real position
+// must never be, because the paper broker cannot close a position it does not
+// hold — it would open an unrelated one and report success while the real
+// exposure stayed on.
+func TestRealBookRefusesWhenLiveIsAbsent(t *testing.T) {
+	eng, _, _ := routingEngine(t)
+
+	b, err := eng.brokerForBook(broker.BookReal)
+	if !errors.Is(err, ErrNoLiveBroker) {
+		t.Errorf("err = %v, want ErrNoLiveBroker", err)
+	}
+	if b != nil {
+		t.Errorf("a broker was returned for the real book with none installed: %v", b.Mode())
 	}
 }
 
@@ -271,5 +298,98 @@ func TestLiquidationCoversShortsFirst(t *testing.T) {
 	}
 	if got[2].TradingSymbol != "LONG-A" || got[3].TradingSymbol != "LONG-B" {
 		t.Errorf("longs reordered: %s, %s", got[2].TradingSymbol, got[3].TradingSymbol)
+	}
+}
+
+// Closing a REAL position must reach the live broker.
+//
+// This is the bug that left a real position open. flatten synthesises the closing
+// order, and bookFor derives the book from the REQUEST — but a synthesised close
+// carries neither thing bookFor looks for: positions reconciled from Kite have no
+// StrategyID, and nothing sets Book on an order the operator never typed. So the
+// close looked exactly like a strategy order, went to the paper broker, opened a
+// phantom paper position facing the other way, and reported success while the real
+// exposure stayed on. On the panic button and the expiry-day sweep, both of which
+// close real positions, that is the whole safety mechanism doing nothing.
+func TestSquaringOffARealPositionReachesTheLiveBroker(t *testing.T) {
+	ctx := context.Background()
+	eng, paper, live := routingEngine(t)
+	eng.SetLiveBroker(live)
+
+	// A real short, as refreshPositions would have tagged it.
+	eng.mu.Lock()
+	eng.positions = []broker.Position{{
+		Exchange: "NFO", TradingSymbol: "NIFTY24350CE", Product: broker.ProductMIS,
+		NetQuantity: -75, AveragePrice: 120, Book: broker.BookReal,
+	}}
+	eng.mu.Unlock()
+
+	if _, err := eng.SquareOff(ctx, "", "NIFTY24350CE"); err != nil {
+		t.Fatalf("SquareOff: %v", err)
+	}
+
+	if len(live.placed) != 1 {
+		t.Fatalf("the live broker received %d orders, want 1 — the real position was not closed",
+			len(live.placed))
+	}
+	got := live.placed[0]
+	if got.Side != broker.SideBuy {
+		t.Errorf("side = %q, want BUY to close a short", got.Side)
+	}
+	if got.Quantity != 75 {
+		t.Errorf("quantity = %d, want 75", got.Quantity)
+	}
+	if got.Intent != broker.IntentClose {
+		t.Error("the square-off did not carry IntentClose, so the risk limits could refuse an exit")
+	}
+	// And nothing may have leaked into the simulated book.
+	if pos, _ := paper.GetPositions(ctx); len(pos) != 0 {
+		t.Errorf("closing a real position created %d paper position(s): %+v", len(pos), pos)
+	}
+}
+
+// The mirror: closing a PAPER position must stay in the paper book even while
+// live routing is armed.
+func TestSquaringOffAPaperPositionStaysSimulated(t *testing.T) {
+	ctx := context.Background()
+	eng, _, live := routingEngine(t)
+	eng.SetLiveBroker(live)
+
+	eng.mu.Lock()
+	eng.positions = []broker.Position{{
+		Exchange: "NFO", TradingSymbol: "NIFTY24350CE", Product: broker.ProductMIS,
+		NetQuantity: -75, AveragePrice: 120, Book: broker.BookPaper,
+		StrategyID: "short-straddle",
+	}}
+	eng.mu.Unlock()
+
+	if _, err := eng.SquareOff(ctx, "short-straddle", "NIFTY24350CE"); err != nil {
+		t.Fatalf("SquareOff: %v", err)
+	}
+	if len(live.placed) != 0 {
+		t.Errorf("closing a SIMULATED position sent %d order(s) to the exchange: %+v",
+			len(live.placed), live.placed)
+	}
+}
+
+// With the live broker gone, closing a real position must FAIL rather than quietly
+// place a paper order. The operator has to learn the position is still open.
+func TestSquaringOffARealPositionFailsWithoutALiveBroker(t *testing.T) {
+	ctx := context.Background()
+	eng, paper, _ := routingEngine(t)
+
+	eng.mu.Lock()
+	eng.positions = []broker.Position{{
+		Exchange: "NFO", TradingSymbol: "NIFTY24350CE", Product: broker.ProductMIS,
+		NetQuantity: -75, AveragePrice: 120, Book: broker.BookReal,
+	}}
+	eng.mu.Unlock()
+
+	_, err := eng.SquareOff(ctx, "", "NIFTY24350CE")
+	if !errors.Is(err, ErrNoLiveBroker) {
+		t.Errorf("err = %v, want ErrNoLiveBroker", err)
+	}
+	if pos, _ := paper.GetPositions(ctx); len(pos) != 0 {
+		t.Errorf("a phantom paper position was opened instead of failing: %+v", pos)
 	}
 }

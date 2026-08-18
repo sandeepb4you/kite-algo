@@ -124,19 +124,28 @@ func (e *Engine) bookFor(req broker.OrderRequest) broker.Book {
 	return broker.BookPaper
 }
 
-// brokerFor picks the broker for one order request.
+// brokerForBook returns the broker that holds one book.
 //
-// Falls back to paper whenever the live broker is absent. That direction of
-// failure is the only acceptable one: a manual order quietly simulated is a
-// missing trade, while a strategy order quietly sent live is real money moved
-// by something nobody authorised.
-func (e *Engine) brokerFor(req broker.OrderRequest) (broker.Broker, broker.Book) {
-	if e.bookFor(req) == broker.BookReal {
+// It REFUSES rather than substituting when the real book is asked for and no live
+// broker exists. That looks like the opposite of the fallback rule one level up
+// in bookFor, and it is: the two are answering different questions.
+//
+// bookFor decides where a NEW order should go, and falling back to paper there is
+// the safe direction — a manual order quietly simulated is a missing trade, while
+// a strategy order quietly sent live is real money moved by something nobody
+// authorised. But this function is reached once a book has already been decided,
+// including by the engine closing a position it can see in the real book. Silently
+// substituting the paper broker there does not simulate the close, it invents an
+// unrelated paper position and reports success while the real exposure stays open.
+// That is strictly worse than failing, so it fails.
+func (e *Engine) brokerForBook(b broker.Book) (broker.Broker, error) {
+	if b.IsReal() {
 		if live := e.liveBrokerOrNil(); live != nil {
-			return live, broker.BookReal
+			return live, nil
 		}
+		return nil, ErrNoLiveBroker
 	}
-	return e.paperBrokerOrCurrent(), broker.BookPaper
+	return e.paperBrokerOrCurrent(), nil
 }
 
 // brokerForOrder resolves the broker holding an existing order.

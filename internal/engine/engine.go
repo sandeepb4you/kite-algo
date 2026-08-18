@@ -589,11 +589,35 @@ func (e *Engine) PlaceOrder(ctx context.Context, req broker.OrderRequest) (*brok
 // opening risk, and a halt that also blocked the flatten would leave the
 // operator holding a position they explicitly asked to close.
 func (e *Engine) placeOrderInternal(ctx context.Context, req broker.OrderRequest) (*broker.Order, error) {
-	lotSize := e.LotSize(req.TradingSymbol)
 	// Risk is evaluated per book. A strategy losing simulated money must not
 	// consume the exposure allowance or trip the daily-loss halt that exists to
 	// protect real capital, and vice versa — the two are different money.
-	book := e.bookFor(req)
+	return e.placeOrderIn(ctx, req, e.bookFor(req))
+}
+
+// placeOrderIn is placeOrderInternal with the book supplied by the caller rather
+// than inferred from the request.
+//
+// It exists for square-offs. bookFor derives the book from the REQUEST, and a
+// request the engine synthesised to close a position carries neither of the two
+// things bookFor looks for: positions reconciled from Kite have no StrategyID at
+// all, and nothing was going to set Book on an order the operator never typed. So
+// closing a real position produced a request that looked exactly like a strategy
+// order, routed to the paper broker, and left the real position open while opening
+// a phantom paper one in the opposite direction — with the engine reporting
+// success, because from its point of view an order had been placed.
+//
+// The book a position is held in is a FACT about that position, not something to
+// re-derive from a synthesised request. flatten passes it through.
+//
+// This does not give strategies a route to the exchange. The book here comes from
+// the reconciled position, and a strategy's positions are always paper because a
+// strategy can never open a real one; bookFor is unchanged for every order that
+// originates outside the engine.
+func (e *Engine) placeOrderIn(
+	ctx context.Context, req broker.OrderRequest, book broker.Book,
+) (*broker.Order, error) {
+	lotSize := e.LotSize(req.TradingSymbol)
 	openPositions := e.snapshotBookPositionCount(book)
 	dayPnL := e.snapshotBookPnL(book)
 
@@ -639,7 +663,22 @@ func (e *Engine) placeOrderInternal(ctx context.Context, req broker.OrderRequest
 		return nil, err
 	}
 
-	router, book := e.brokerFor(req)
+	router, err := e.brokerForBook(book)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Error("order cannot be routed",
+				"symbol", req.TradingSymbol, "book", book, "err", err)
+		}
+		e.pub.Publish(events.Event{
+			Kind:       events.KindOrderRejected,
+			Symbol:     req.TradingSymbol,
+			StrategyID: req.StrategyID,
+			Level:      events.LevelError,
+			Message:    err.Error(),
+			Fields:     map[string]any{"rule": "no-broker", "book": string(book)},
+		})
+		return nil, err
+	}
 	o, err := router.PlaceOrder(ctx, req)
 	if err != nil {
 		e.pub.Publish(events.Event{

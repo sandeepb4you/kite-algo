@@ -20,6 +20,14 @@ const ManualStrategyID = "manual"
 // ErrNoPosition is returned when asked to close something that is already flat.
 var ErrNoPosition = errors.New("no open position in that symbol")
 
+// ErrNoLiveBroker is returned when the real book must be reached and cannot be.
+//
+// Only a square-off can produce this: closing a real position requires the live
+// broker, and quietly using the paper one instead would leave the real exposure
+// open while reporting success.
+var ErrNoLiveBroker = errors.New(
+	"no live broker: the real position cannot be squared off until the Zerodha session is active")
+
 // PlaceManualOrder submits an operator's order from the web UI.
 //
 // It deliberately routes through PlaceOrder rather than the broker directly, so
@@ -158,7 +166,14 @@ func (e *Engine) flatten(ctx context.Context, p broker.Position) (*broker.Order,
 	// frozen holding everything they just asked to close.
 	//
 	// The risk manager still runs; IntentClose exempts the exposure limits.
-	return e.placeOrderInternal(ctx, broker.OrderRequest{
+	//
+	// placeOrderIn, with the position's OWN book, not placeOrderInternal. A
+	// square-off closes a specific position in a specific book, and that book is
+	// a fact about the position rather than something to re-derive from the
+	// request being synthesised here. Inferring it sent every real square-off to
+	// the paper broker: the real position stayed open, a phantom paper position
+	// appeared facing the other way, and the UI reported the close as done.
+	return e.placeOrderIn(ctx, broker.OrderRequest{
 		StrategyID:    p.StrategyID,
 		Intent:        broker.IntentClose,
 		Exchange:      exchange,
@@ -169,7 +184,10 @@ func (e *Engine) flatten(ctx context.Context, p broker.Position) (*broker.Order,
 		Quantity:      qty,
 		Validity:      broker.ValidityDay,
 		Tag:           "square-off",
-	})
+		// Carried for the audit trail. The routing decision is the explicit book
+		// below; this makes the persisted order agree with where it went.
+		Book: p.Book,
+	}, p.Book)
 }
 
 // OpenOrders returns the currently pending orders from the active broker.
