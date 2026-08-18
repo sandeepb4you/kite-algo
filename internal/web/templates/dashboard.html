@@ -6,9 +6,12 @@
     <h2>Day P&amp;L</h2>
     <p id="day-pnl" class="figure {{pnlClass .Status.DayPnL}}">₹{{signed .Status.DayPnL}}</p>
     <p class="muted small">
-      Daily loss limit ₹{{money .Status.RiskLimits.MaxDailyLoss}} ·
-      max {{.Status.RiskLimits.MaxLotsPerTrade}} lot(s)/order ·
-      max {{.Status.RiskLimits.MaxOpenPositions}} open positions
+      {{/* Label first, value second. A zero limit means "no limit", and the
+           old phrasing turned that into "max 0 lot(s)/order" — which reads as a
+           book that can trade nothing, the exact opposite of what it means. */}}
+      Daily loss {{capMoney .Status.RiskLimits.MaxDailyLoss}} ·
+      lots/order {{cap .Status.RiskLimits.MaxLotsPerTrade}} ·
+      open positions {{cap .Status.RiskLimits.MaxOpenPositions}}
     </p>
   </section>
 

@@ -413,12 +413,23 @@ func (c *Config) applyDefaults() {
 	if c.SecretsPath == "" {
 		c.SecretsPath = "~/.trading/secrets.yaml"
 	}
-	if c.Risk.MaxOpenPositions == 0 {
-		c.Risk.MaxOpenPositions = 5
-	}
-	if c.Risk.MaxLotsPerTrade == 0 {
-		c.Risk.MaxLotsPerTrade = 1
-	}
+	// NO defaults for the risk limits. A zero limit means "no limit" everywhere
+	// else in this file and in risk.Check, which guards every rule on `> 0`, and
+	// DisabledRiskLimits reports a zero as switched off.
+	//
+	// MaxOpenPositions used to default to 5 and MaxLotsPerTrade to 1, which
+	// contradicted all three. Writing `max_lots_per_trade: 0` to switch the cap
+	// off produced a cap of ONE LOT: every order above a single lot was rejected
+	// on a limit the operator had explicitly disabled, /risk displayed 5 and 1 as
+	// though they had been configured, and the startup warning that exists to
+	// announce a disabled limit stayed silent because by then the value was no
+	// longer zero. An omitted key and an explicit 0 are indistinguishable in a
+	// plain int, so the default could not tell "unset" from "off" and guessed
+	// wrong in the direction that overrides the operator.
+	//
+	// Nothing is lost by removing them: a limit left off is named at every start
+	// (DisabledRiskLimits) and shown as off on /risk. MaxDailyLoss and
+	// MaxOrderValue have always behaved this way, so this makes all four agree.
 	if c.Web.Addr == "" {
 		c.Web.Addr = "127.0.0.1:8080"
 	}

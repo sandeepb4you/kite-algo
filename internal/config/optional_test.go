@@ -46,8 +46,12 @@ func TestMalformedConfigIsStillAnError(t *testing.T) {
 }
 
 // TestDisabledRiskLimitsAreReported covers the trap in running without a config
-// file: the daily-loss and order-value caps default to zero, which means "no
-// limit", and nothing else would tell the operator.
+// file: every risk cap is then zero, which means "no limit", and nothing else
+// would tell the operator.
+//
+// All four must be reported. MaxOpenPositions and MaxLotsPerTrade used to be
+// defaulted to 5 and 1 by applyDefaults, which made them invisible here — and
+// worse, made an explicit `max_lots_per_trade: 0` come out as a one-lot cap.
 func TestDisabledRiskLimitsAreReported(t *testing.T) {
 	cfg, err := Load(filepath.Join(t.TempDir(), "nope.yaml"))
 	if err != nil {
@@ -55,15 +59,46 @@ func TestDisabledRiskLimitsAreReported(t *testing.T) {
 	}
 
 	off := cfg.DisabledRiskLimits()
-	if !slices.Contains(off, "max_daily_loss") {
-		t.Errorf("disabled limits = %v; max_daily_loss defaults to 0 (unlimited) and must be reported", off)
+	for _, name := range []string{
+		"max_daily_loss", "max_order_value", "max_open_positions", "max_lots_per_trade",
+	} {
+		if !slices.Contains(off, name) {
+			t.Errorf("disabled limits = %v; %s is 0 (unlimited) and must be reported", off, name)
+		}
 	}
-	if !slices.Contains(off, "max_order_value") {
-		t.Errorf("disabled limits = %v; max_order_value defaults to 0 (unlimited) and must be reported", off)
+}
+
+// A zero sizing cap must survive Load, or the operator cannot switch one off.
+//
+// Writing 0 to disable max_lots_per_trade produced a cap of ONE LOT: applyDefaults
+// rewrote it before anything read it, so every order above a single lot was
+// refused on a limit that had been explicitly disabled, and /risk showed 5 and 1
+// as though they were the configured values.
+func TestZeroSizingCapsSurviveLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "off.yaml")
+	writeFile(t, path, `mode: paper
+risk:
+  max_daily_loss: 5000
+  max_open_positions: 0
+  max_order_value: 0
+  max_lots_per_trade: 0
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// These two do have non-zero defaults, so they are genuinely active.
-	if slices.Contains(off, "max_lots_per_trade") {
-		t.Error("max_lots_per_trade has a default of 1 and should not be reported as disabled")
+
+	if cfg.Risk.MaxOpenPositions != 0 {
+		t.Errorf("max_open_positions = %d, want 0 — a cap the operator switched off was re-imposed",
+			cfg.Risk.MaxOpenPositions)
+	}
+	if cfg.Risk.MaxLotsPerTrade != 0 {
+		t.Errorf("max_lots_per_trade = %d, want 0 — every order above %d lot(s) would be refused",
+			cfg.Risk.MaxLotsPerTrade, cfg.Risk.MaxLotsPerTrade)
+	}
+	// The cap that is deliberately still on must be untouched.
+	if cfg.Risk.MaxDailyLoss != 5000 {
+		t.Errorf("max_daily_loss = %v, want 5000", cfg.Risk.MaxDailyLoss)
 	}
 }
 

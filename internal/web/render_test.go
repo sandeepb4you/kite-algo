@@ -917,3 +917,71 @@ func TestChainReadOnlyTruthTable(t *testing.T) {
 		})
 	}
 }
+
+// A switched-off cap must say so, not print a zero.
+//
+// A zero limit means "no limit" in risk.Check, but rendered as a bare number it
+// says the opposite: "max open positions: 0" reads as a lockout and "max lots per
+// trade: 0" as a book that cannot trade at all. The operator turned these caps
+// off deliberately and needs the page to confirm that, not to look broken.
+func TestRiskPageNamesASwitchedOffCap(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{Mode: "live"}, CSRF: "x", Data: riskData{
+		// Everything off except the daily loss, which is how this box is run.
+		Limits:     risk.Limits{MaxDailyLoss: 25000},
+		Defaults:   risk.Limits{MaxDailyLoss: 25000},
+		LiveLimits: risk.Limits{},
+		LivePolicy: "1% of opening balance",
+	}}
+	if err := r.Render(w, 200, "risk.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	// Three read-only live rows, all off.
+	if got := strings.Count(body, "no limit"); got < 3 {
+		t.Errorf("risk page said \"no limit\" %d times, want at least 3 — "+
+			"a zero cap is being printed as a number", got)
+	}
+	// The specific misreadings that prompted this — the read-only policy cells.
+	// Scoped to those cells rather than the whole page, because a zero elsewhere
+	// (an empty order-count badge, say) is perfectly honest.
+	for _, bad := range []string{`<td class="mono">0</td>`, `<td class="mono">0.00</td>`} {
+		if strings.Contains(body, bad) {
+			t.Errorf("the live policy table still renders a bare zero (%s) for a disabled cap", bad)
+		}
+	}
+	// The cap that IS set must still show its value.
+	if !strings.Contains(body, "25,000.00") {
+		t.Error("the configured daily loss limit is not shown")
+	}
+}
+
+// The dashboard's one-line summary has the same trap, and it is the line seen
+// most often.
+func TestDashboardSummaryNamesASwitchedOffCap(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	v := pageView{Status: app.Status{
+		Mode:       "live",
+		RiskLimits: risk.Limits{MaxDailyLoss: 25000},
+	}, CSRF: "x", Data: dashboardData{}}
+	if err := r.Render(w, 200, "dashboard.html", v); err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+
+	if strings.Contains(body, "max 0 lot") || strings.Contains(body, "max 0 open") {
+		t.Error("dashboard reports a disabled cap as a cap of zero")
+	}
+	if !strings.Contains(body, "no limit") {
+		t.Error("dashboard does not name the disabled caps")
+	}
+}

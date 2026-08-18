@@ -19,9 +19,9 @@
   {{end}}
   <table class="kv">
     <tr><th>Daily loss cap</th><td class="mono">{{.Data.LivePolicy}}</td></tr>
-    <tr><th>Max open positions</th><td class="mono">{{.Data.LiveLimits.MaxOpenPositions}}</td></tr>
-    <tr><th>Max order value</th><td class="mono">{{money .Data.LiveLimits.MaxOrderValue}}</td></tr>
-    <tr><th>Max lots per trade</th><td class="mono">{{.Data.LiveLimits.MaxLotsPerTrade}}</td></tr>
+    <tr><th>Max open positions</th><td class="mono">{{cap .Data.LiveLimits.MaxOpenPositions}}</td></tr>
+    <tr><th>Max order value</th><td class="mono">{{capMoney .Data.LiveLimits.MaxOrderValue}}</td></tr>
+    <tr><th>Max lots per trade</th><td class="mono">{{cap .Data.LiveLimits.MaxLotsPerTrade}}</td></tr>
   </table>
   <p class="muted small">
     Set under <code>risk.live</code> in <code>config.yaml</code>; a restart is
@@ -67,23 +67,23 @@
            value="{{num .Data.Limits.MaxDailyLoss}}">
     <p class="muted small">
       Blocks new entries once the day's P&amp;L falls below this.
-      Default {{money .Data.Defaults.MaxDailyLoss}}.
+      Default {{capMoney .Data.Defaults.MaxDailyLoss}}.
     </p>
 
     <label for="max_order_value">Max order value (₹)</label>
     <input id="max_order_value" name="max_order_value" type="number" step="any" min="0"
            value="{{num .Data.Limits.MaxOrderValue}}">
-    <p class="muted small">Default {{money .Data.Defaults.MaxOrderValue}}.</p>
+    <p class="muted small">Default {{capMoney .Data.Defaults.MaxOrderValue}}.</p>
 
     <label for="max_lots_per_trade">Max lots per order</label>
     <input id="max_lots_per_trade" name="max_lots_per_trade" type="number" step="1" min="0"
            value="{{.Data.Limits.MaxLotsPerTrade}}">
-    <p class="muted small">Default {{.Data.Defaults.MaxLotsPerTrade}}.</p>
+    <p class="muted small">Default {{cap .Data.Defaults.MaxLotsPerTrade}}. Zero switches the cap off.</p>
 
     <label for="max_open_positions">Max open positions</label>
     <input id="max_open_positions" name="max_open_positions" type="number" step="1" min="0"
            value="{{.Data.Limits.MaxOpenPositions}}">
-    <p class="muted small">Default {{.Data.Defaults.MaxOpenPositions}}.</p>
+    <p class="muted small">Default {{cap .Data.Defaults.MaxOpenPositions}}. Zero switches the cap off.</p>
 
     <button class="btn btn-primary" type="submit">Save limits</button>
   </form>

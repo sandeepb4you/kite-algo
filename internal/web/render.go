@@ -165,6 +165,28 @@ func funcMap() template.FuncMap {
 			_, p := splitByBook(positions, csrf)
 			return p
 		},
+		// cap and capMoney render a risk limit, naming a zero as what it
+		// actually means.
+		//
+		// A zero limit is "no limit" throughout risk.Check, but printed as a bare
+		// 0 it reads as the opposite — "max open positions: 0" looks like a
+		// lockout, and "max order value: 0.00" like a book that can trade
+		// nothing. On a read-only policy table that is the whole message, so it
+		// has to say the word.
+		"cap": func(n int) string {
+			if n <= 0 {
+				return "no limit"
+			}
+			return strconv.Itoa(n)
+		},
+		// capMoney carries its own rupee sign, because the alternative is a
+		// literal ₹ in the template sitting in front of the words "no limit".
+		"capMoney": func(f float64) string {
+			if f <= 0 {
+				return "no limit"
+			}
+			return "₹" + money(f)
+		},
 		// money formats rupees with Indian digit grouping (12,34,567.89).
 		"money": money,
 		// signed renders a PnL figure with an explicit sign.
