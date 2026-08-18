@@ -163,6 +163,10 @@ func (b *LiveBroker) GetOpenOrders(ctx context.Context) ([]Order, error) {
 }
 
 // GetPositions maps Kite's net positions into broker.Position.
+//
+// Flat rows are KEPT, and PnL is the REALIZED figure only. Both are required by
+// the Broker contract, and getting either wrong corrupts the day P&L that the
+// daily-loss limit reads — see the two notes below.
 func (b *LiveBroker) GetPositions(ctx context.Context) ([]Position, error) {
 	views, err := b.client.GetPositions(ctx)
 	if err != nil {
@@ -171,9 +175,14 @@ func (b *LiveBroker) GetPositions(ctx context.Context) ([]Position, error) {
 	net := views["net"]
 	out := make([]Position, 0, len(net))
 	for _, k := range net {
-		if k.Quantity == 0 {
-			continue
-		}
+		// Flat rows (quantity 0) are a fully-closed position and still carry the
+		// day's realized P&L. Kite keeps them in `net`; this used to drop them,
+		// so closing a live position made its realized loss VANISH from the day
+		// P&L — and that is the number risk.Check compares against the
+		// daily-loss limit. A day of round trips therefore under-reported its
+		// losses and the cap failed to trip. Every consumer that wants only
+		// genuinely open positions filters on IsOpen(), the same way it already
+		// does for the paper broker, which has always returned these rows.
 		out = append(out, Position{
 			Exchange:      k.Exchange,
 			TradingSymbol: k.Tradingsymbol,
@@ -181,11 +190,40 @@ func (b *LiveBroker) GetPositions(ctx context.Context) ([]Position, error) {
 			NetQuantity:   k.Quantity,
 			AveragePrice:  k.AveragePrice,
 			LastPrice:     k.LastPrice,
-			PnL:           k.PnL,
+			PnL:           realizedPnL(k),
 			Updated:       b.now(),
 		})
 	}
 	return out, nil
+}
+
+// realizedPnL extracts the realized-only P&L from a Kite position row.
+//
+// The engine keeps broker figures as the realized BASELINE and adds unrealized
+// on top of it on every tick (engine.markPositionsToMarket). Kite's own `pnl`
+// is the TOTAL — `(sell_value - buy_value) + quantity * last_price *
+// multiplier` — so passing it through counted the unrealized part twice, once
+// from Kite and once from the mark. An open live position reported roughly
+// double its true gain or loss, which tripped the daily-loss limit early in the
+// same code path where a closed position tripped it late.
+//
+// Backing the mark-to-market term out of Kite's formula leaves the realized
+// part: substituting average_price for last_price prices the still-open
+// quantity at cost, which is what "nothing realized yet" means.
+//
+//	realized = (sell_value - buy_value) + quantity * average_price * multiplier
+//
+// Verified against the cases in TestRealizedPnL: untouched long or short -> 0,
+// partial close -> the closed portion only, fully closed -> sell minus buy.
+func realizedPnL(k kite.KitePosition) float64 {
+	multiplier := k.Multiplier
+	if multiplier == 0 {
+		// Absent or zero means 1 for the index options this trades. Defaulting
+		// to 0 would silently zero the open leg's cost basis and report the
+		// whole unrealized move as realized.
+		multiplier = 1
+	}
+	return (k.SellValue - k.BuyValue) + float64(k.Quantity)*k.AveragePrice*multiplier
 }
 
 // exchangeID looks up the Kite exchange order id for an internal order id.
