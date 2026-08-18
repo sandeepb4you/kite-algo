@@ -173,7 +173,11 @@ main { padding: 20px 16px; max-width: 1560px; margin: 0 auto; }
   gap: 20px;
 }
 
-.figure { font-size: 32px; font-weight: 700; margin: 8px 0; font-family: var(--mono); }
+.figure {
+  font-size: 32px; font-weight: 700; margin: 8px 0;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
 
 /* --- tables -------------------------------------------------------------- */
 
@@ -182,7 +186,7 @@ main { padding: 20px 16px; max-width: 1560px; margin: 0 auto; }
 .grid-table th { color: var(--muted); font-weight: 600; font-size: 10.5px;
                  padding: 5px 8px;
                  text-transform: uppercase; letter-spacing: 0.04em; }
-.grid-table .r, th.r, td.r { text-align: right; }
+.grid-table .r, th.r, td.r { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* A greeks table is 17 columns wide and will not fit a laptop viewport. Scroll
    it inside its own box rather than letting it stretch the page, which would
@@ -194,7 +198,44 @@ main { padding: 20px 16px; max-width: 1560px; margin: 0 auto; }
 .kv th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 12px 4px 0; }
 .kv td { padding: 4px 0; }
 
-.mono { font-family: var(--mono); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* --- stable width for figures that tick ----------------------------------
+   Every number in the header and the chain is rewritten while the market
+   moves — the day P&L about four times a second (ws.js applyPnL), every
+   premium on every tick. Text that changes width relayouts its neighbours,
+   and in the header that reads as the Balance and Used figures sliding left
+   and right as P&L ticks: .account sits after the flex:1 .spacer, so one more
+   digit anywhere in the block steals width from the spacer and drags the
+   whole block sideways. Nothing is wrong with the values; the row will not
+   hold still long enough to read them.
+
+   Two parts, and both are needed. tabular-nums above fixes the digit ADVANCE,
+   so 1 and 8 occupy the same width and a value can change without changing
+   width at all. A reserved min-width with the text right-aligned inside it
+   then absorbs a change in the NUMBER of digits — 999.50 to 1,000.00, or a
+   sign appearing — which no font feature can help with. Reserving is what
+   makes the row stable rather than merely less jumpy.
+
+   min-width is a floor, not a clamp: a figure larger than the reservation
+   still renders in full and simply sets its own width. That keeps the
+   header honest about a big number at the cost of one relayout when it
+   crosses the threshold, which beats truncating money.
+
+   Deliberately CSS, and deliberately structural selectors. Padding the string
+   in the template or in ws.js would put layout in two places, and applyPnL
+   rewrites className on the P&L element on every tick — a class added there
+   for styling would be dropped on the first update and the jitter would come
+   back looking like a CSS bug. */
+.acct b {
+  min-width: 12ch;
+  text-align: right;
+}
+
+/* The chain reflows worst of all: premiums on both sides of the strike change
+   together, so the strike column itself walks left and right under the cursor
+   while you are aiming at a premium to click. */
+.chain td.p0 { min-width: 8ch; }
 
 /* Wide tables scroll inside themselves rather than pushing the page sideways. */
 .card { overflow-x: auto; }
