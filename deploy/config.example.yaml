@@ -60,7 +60,37 @@ capture:
       index: "NIFTY 50"
     - name: "SENSEX"
       index: "SENSEX"
-  holidays: []
+  # NSE/BSE trading holidays. Equity and equity-derivative segments share one
+  # list, so this serves both NFO and BFO capture.
+  #
+  # Weekends are handled structurally; these are not derivable and must be
+  # listed. Getting one WRONG is asymmetric: an unlisted holiday costs a few
+  # empty requests and a spurious login nag, while a date listed here that is
+  # actually a trading day makes the capture SKIP it, and an expired contract's
+  # candles cannot be fetched again afterwards. When in doubt, leave it out.
+  #
+  # 2026, verified against two independent published lists. Re-check against
+  # nseindia.com/resources/exchange-communication-holidays each December, and
+  # note that election holidays are announced mid-year — 15 Jan 2026 was one.
+  holidays:
+    - "2026-01-15"  # Maharashtra municipal elections
+    - "2026-01-26"  # Republic Day
+    - "2026-03-03"  # Holi
+    - "2026-03-26"  # Shri Ram Navami
+    - "2026-03-31"  # Shri Mahavir Jayanti
+    - "2026-04-03"  # Good Friday
+    - "2026-04-14"  # Dr Baba Saheb Ambedkar Jayanti
+    - "2026-05-01"  # Maharashtra Day
+    - "2026-05-28"  # Bakri Id
+    - "2026-06-26"  # Muharram
+    - "2026-09-14"  # Ganesh Chaturthi
+    - "2026-10-02"  # Mahatma Gandhi Jayanti
+    - "2026-10-20"  # Dussehra
+    - "2026-11-10"  # Diwali Balipratipada
+    - "2026-11-24"  # Prakash Gurpurb Sri Guru Nanak Dev
+    - "2026-12-25"  # Christmas
+  # Note: Diwali Laxmi Pujan falls on Sunday 8 Nov 2026 with a special Muhurat
+  # session. Weekends are skipped structurally, so that session is not captured.
 
 # Outbound alerts. Optional, and off unless enabled.
 #
