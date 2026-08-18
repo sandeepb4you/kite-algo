@@ -29,7 +29,9 @@ Environment=KITE_BACKUP_KEEP_MONTHLY_DAYS=365
 # Local copies protect against corruption and bad deletes. They do NOT survive
 # losing the disk or the VM, and what is lost then is every day of captured option
 # data, which Kite will not sell back at any price.
-Environment=KITE_BACKUP_RCLONE_REMOTE=utho:kite-algo-backups
+# Utho bucket names are auto-generated — use the exact one from the console, and
+# note the rclone remote needs `no_check_bucket = true` (see deploy/README.md).
+Environment=KITE_BACKUP_RCLONE_REMOTE=utho:CHANGE-ME/kite-algo
 # e.g. --bwlimit 10M
 Environment=KITE_BACKUP_RCLONE_FLAGS=
 

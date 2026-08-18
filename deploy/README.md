@@ -411,23 +411,53 @@ region = innoida
 ```
 
 The endpoint is **per datacentre** — `innoida` is Delhi/Noida. Confirm yours in the
-Utho console rather than trusting this line; a wrong endpoint fails loudly on the
-first upload, which is the good case, but there is no reason to find out that way.
-If uploads fail with signature or addressing errors, add `force_path_style = true`.
+Utho console rather than trusting this line.
 
-**3. Verify the remote before wiring it in:**
+Four Utho-specific things, each of which returns the same unhelpful
+`403 AccessDenied` and each of which cost a round trip to find:
+
+- **`no_check_bucket = true` is required, not optional.** rclone verifies the
+  bucket exists before every upload and creates it if it cannot confirm. A
+  bucket-scoped Utho key can do neither, so without this line every single upload
+  fails on `CreateBucket` — including the ones inside `backup.sh`, which uses
+  `rclone copyto`.
+- **Create the bucket in the console.** The key cannot create one. `rclone mkdir`
+  will 403 and that is expected; the backup job never calls it.
+- **The access key must be LINKED to the bucket.** Generating a key and
+  associating it with a bucket are separate steps in Utho, and a key grants
+  nothing until linked. The symptom is `PutObject: AccessDenied` after
+  `no_check_bucket` has already fixed the `CreateBucket` failure.
+- **Bucket names are auto-generated**, like `bucket-fgiekcqg`. Use the exact name
+  from the console. A key linked to a *different* bucket returns `AccessDenied`
+  rather than `NoSuchBucket`, so a wrong name is indistinguishable from a missing
+  permission by the error alone.
+
+If uploads fail with signature or addressing errors rather than access ones, add
+`force_path_style = true`.
+
+The config must be **root's** (`/root/.config/rclone/rclone.conf`) because the
+timer runs as root. `rclone config` also discards everything if you quit the
+interactive flow without confirming with `y` — writing the file directly, as above,
+avoids both traps and is easier to verify with `cat`.
+
+**3. Verify the remote before wiring it in.** These are exactly the four operations
+the backup job performs — write, read, list, delete — so passing them means the job
+will work. `rclone lsd utho:` may 403 on a bucket-scoped key and that is fine; it is
+not an operation the job uses.
 
 ```sh
-sudo rclone lsd utho:
-sudo rclone mkdir utho:kite-algo-backups
-echo hello | sudo rclone rcat utho:kite-algo-backups/probe.txt
-sudo rclone cat utho:kite-algo-backups/probe.txt
-sudo rclone deletefile utho:kite-algo-backups/probe.txt
+BUCKET=bucket-fgiekcqg        # the exact name from the console
+echo probe | sudo rclone rcat "utho:$BUCKET/probe.txt"
+sudo rclone cat  "utho:$BUCKET/probe.txt"
+sudo rclone ls   "utho:$BUCKET"
+sudo rclone deletefile "utho:$BUCKET/probe.txt"
 ```
 
-**4. Point the job at it.** `KITE_BACKUP_RCLONE_REMOTE` is already set to
-`utho:kite-algo-backups` in the unit file; adjust the bucket name if yours differs,
-then:
+**4. Point the job at it.** Set `KITE_BACKUP_RCLONE_REMOTE` in the unit file to your
+bucket plus a prefix — `utho:bucket-fgiekcqg/kite-algo`. The prefix is not required
+(pruning ignores anything not named `trading-YYYY-MM-DD.db.gz`) but it keeps the
+objects identifiable if the bucket is ever used for anything else. rclone creates
+the prefix implicitly on first upload. Then:
 
 ```sh
 sudo systemctl daemon-reload
