@@ -17,6 +17,11 @@
      being buttons. Disabled rather than rendered as plain cells, so there is one
      chain markup rather than two that can drift. */}}
 {{$ro := .Data.ChainReadOnly}}
+{{/* Which book the Pos column reports. The desks show different books there —
+     real on the live desk, simulated on the terminal — and an unlabelled
+     quantity that silently changes meaning between two nearly identical pages is
+     worse than no quantity at all. */}}
+{{$posbook := "simulated book"}}{{if .Data.Live}}{{$posbook = "real book"}}{{end}}
 
 {{/* Submits back to the page it is rendered on, so picking a contract on
      the live desk keeps you on the live desk. */}}
@@ -71,9 +76,9 @@
         <th colspan="2" class="c put-side">PUTS</th>
       </tr>
       <tr>
-        <th class="r">Pos</th><th class="r">LTP</th>
+        <th class="r" title="Net quantity held in the {{$posbook}}">Pos</th><th class="r">LTP</th>
         <th></th>
-        <th class="r">LTP</th><th class="r">Pos</th>
+        <th class="r">LTP</th><th class="r" title="Net quantity held in the {{$posbook}}">Pos</th>
       </tr>
     </thead>
     <tbody>

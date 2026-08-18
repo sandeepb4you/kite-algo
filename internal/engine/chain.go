@@ -5,6 +5,8 @@ import (
 	"math"
 	"sort"
 	"time"
+
+	"kite-algo/internal/broker"
 )
 
 // spotSymbols maps an option underlying to the index whose spot price drives it.
@@ -72,7 +74,12 @@ const DefaultChainDepth = 10
 // expiry may be zero, in which case the nearest available one is used — the
 // weekly, for an underlying that has weeklies. depth limits how far either side
 // of the money to include; pass 0 for DefaultChainDepth.
-func (e *Engine) OptionChain(underlying string, expiry time.Time, depth int) (OptionChain, error) {
+//
+// book selects whose positions the Held column reports. It is not cosmetic: the
+// chain on the live desk must show what the REAL book holds and the terminal what
+// the simulated one holds, because the number's only job is to tell you what an
+// order from that page would be adding to.
+func (e *Engine) OptionChain(underlying string, expiry time.Time, depth int, book broker.Book) (OptionChain, error) {
 	e.cmu.RLock()
 	instruments := e.instruments
 	e.cmu.RUnlock()
@@ -118,7 +125,7 @@ func (e *Engine) OptionChain(underlying string, expiry time.Time, depth int) (Op
 	// Group the flat leg list into per-strike rows.
 	byStrike := make(map[float64]*ChainRow)
 	var strikes []float64
-	held := e.heldQuantities()
+	held := e.heldQuantities(book)
 
 	for i := range legs {
 		leg := &legs[i]
@@ -178,11 +185,22 @@ func (e *Engine) OptionChain(underlying string, expiry time.Time, depth int) (Op
 	return out, nil
 }
 
-// heldQuantities maps trading symbol to net position quantity.
-func (e *Engine) heldQuantities() map[string]int {
+// heldQuantities maps trading symbol to net position quantity in ONE book.
+//
+// Scoped to a book, and it has to be. This summed across both, so the live desk
+// showed simulated size in its Pos column and the terminal showed real size —
+// and a symbol held in both books reported their SUM, a quantity that belongs to
+// neither and that reads as a position twice the size of anything actually open.
+// A blended figure across the two books is the specific failure the split-book
+// design exists to prevent; a Pos column is no more allowed to do it than a P&L
+// total is.
+//
+// Summing WITHIN a book stays right: one symbol can hold several rows in the
+// same book across products (MIS and NRML), and those are genuinely one position.
+func (e *Engine) heldQuantities(book broker.Book) map[string]int {
 	out := make(map[string]int)
 	for _, p := range e.Positions() {
-		if p.NetQuantity != 0 {
+		if p.NetQuantity != 0 && p.Book.IsReal() == book.IsReal() {
 			out[p.TradingSymbol] += p.NetQuantity
 		}
 	}

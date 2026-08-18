@@ -97,7 +97,7 @@ func (s *Server) tradeData(r *http.Request) tradeData {
 		}
 	}
 
-	chain, err := s.app.Engine.OptionChain(underlying, expiry, engine.DefaultChainDepth)
+	chain, err := s.app.Engine.OptionChain(underlying, expiry, engine.DefaultChainDepth, d.Book())
 	if err != nil {
 		d.ChainErr = err.Error()
 		d.Chain = chain // still carries the underlying/expiry lists for the selectors
@@ -407,6 +407,19 @@ func (d tradeData) OrderAction() string {
 		return "/api/live/orders"
 	}
 	return "/api/orders"
+}
+
+// Book is the book this desk trades into, and therefore the one whose figures it
+// may show.
+//
+// Derived from Live for the same reason OrderAction is: a page cannot end up
+// displaying one book's positions while its ticket posts to the other's
+// endpoint, because both come from the same fact.
+func (d tradeData) Book() broker.Book {
+	if d.Live {
+		return broker.BookReal
+	}
+	return broker.BookPaper
 }
 
 // ChainReadOnly reports whether the chain must render as a view rather than a

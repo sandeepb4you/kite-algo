@@ -62,7 +62,7 @@ func TestOptionChainCentresOnATM(t *testing.T) {
 	// Spot near 24520 → ATM should be 24500.
 	e.handleTick(marketdata.Tick{TradingSymbol: "NIFTY 50", LastPrice: 24520})
 
-	chain, err := e.OptionChain("NIFTY", time.Time{}, 2)
+	chain, err := e.OptionChain("NIFTY", time.Time{}, 2, broker.BookPaper)
 	if err != nil {
 		t.Fatalf("OptionChain: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestOptionChainDefaultsToNearestExpiry(t *testing.T) {
 	expiries := nextWeekdays(3)
 	e := chainEngine(t, chainCSV([]float64{24500}, expiries))
 
-	chain, err := e.OptionChain("NIFTY", time.Time{}, 5)
+	chain, err := e.OptionChain("NIFTY", time.Time{}, 5, broker.BookPaper)
 	if err != nil {
 		t.Fatalf("OptionChain: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestOptionChainHonoursRequestedExpiry(t *testing.T) {
 	e := chainEngine(t, chainCSV([]float64{24500}, expiries))
 
 	want, _ := time.Parse("2006-01-02", expiries[2])
-	chain, err := e.OptionChain("NIFTY", want, 5)
+	chain, err := e.OptionChain("NIFTY", want, 5, broker.BookPaper)
 	if err != nil {
 		t.Fatalf("OptionChain: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestOptionChainPairsCallsAndPuts(t *testing.T) {
 	e := chainEngine(t, chainCSV([]float64{24400, 24500, 24600}, expiries))
 	e.handleTick(marketdata.Tick{TradingSymbol: "NIFTY 50", LastPrice: 24500})
 
-	chain, err := e.OptionChain("NIFTY", time.Time{}, 5)
+	chain, err := e.OptionChain("NIFTY", time.Time{}, 5, broker.BookPaper)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestOptionChainShowsHeldQuantity(t *testing.T) {
 	e := chainEngine(t, chainCSV([]float64{24500}, expiries))
 	e.handleTick(marketdata.Tick{TradingSymbol: "NIFTY 50", LastPrice: 24500})
 
-	chain, err := e.OptionChain("NIFTY", time.Time{}, 5)
+	chain, err := e.OptionChain("NIFTY", time.Time{}, 5, broker.BookPaper)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestOptionChainShowsHeldQuantity(t *testing.T) {
 	e.positions = []broker.Position{{TradingSymbol: ceSymbol, NetQuantity: -75}}
 	e.mu.Unlock()
 
-	chain, err = e.OptionChain("NIFTY", time.Time{}, 5)
+	chain, err = e.OptionChain("NIFTY", time.Time{}, 5, broker.BookPaper)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,6 +188,89 @@ func TestOptionChainShowsHeldQuantity(t *testing.T) {
 	}
 }
 
+// The Pos column belongs to ONE book, and must never blend the two.
+//
+// heldQuantities summed across both books, so the live desk showed simulated
+// size and the terminal showed real size — and a contract held in both reported
+// their sum, a quantity twice the size of anything actually open. Position size
+// is exactly as book-sensitive as P&L is: the operator reads that number to
+// decide whether they are adding to a position or closing one, and on the live
+// desk that decision spends real money.
+func TestOptionChainHeldQuantityIsBookScoped(t *testing.T) {
+	expiries := nextWeekdays(1)
+	e := chainEngine(t, chainCSV([]float64{24500}, expiries))
+	e.handleTick(marketdata.Tick{TradingSymbol: "NIFTY 50", LastPrice: 24500})
+
+	chain, err := e.OptionChain("NIFTY", time.Time{}, 5, broker.BookPaper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ceSymbol := chain.Rows[0].Call.TradingSymbol
+	peSymbol := chain.Rows[0].Put.TradingSymbol
+
+	// The same call short in BOTH books — the case that exposes a blend — plus a
+	// put held only on paper, so the leak is visible in both directions.
+	e.mu.Lock()
+	e.positions = []broker.Position{
+		{TradingSymbol: ceSymbol, NetQuantity: -75, Book: broker.BookReal},
+		{TradingSymbol: ceSymbol, NetQuantity: -150, Book: broker.BookPaper},
+		{TradingSymbol: peSymbol, NetQuantity: -225, Book: broker.BookPaper},
+	}
+	e.mu.Unlock()
+
+	real, err := e.OptionChain("NIFTY", time.Time{}, 5, broker.BookReal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := real.Rows[0].Call.Held; got != -75 {
+		t.Errorf("real book call held = %d, want -75 (a blend would report -225)", got)
+	}
+	if got := real.Rows[0].Put.Held; got != 0 {
+		t.Errorf("real book put held = %d, want 0 — that position is simulated", got)
+	}
+
+	paper, err := e.OptionChain("NIFTY", time.Time{}, 5, broker.BookPaper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := paper.Rows[0].Call.Held; got != -150 {
+		t.Errorf("paper book call held = %d, want -150 (a blend would report -225)", got)
+	}
+	if got := paper.Rows[0].Put.Held; got != -225 {
+		t.Errorf("paper book put held = %d, want -225", got)
+	}
+}
+
+// Two rows for one symbol in the SAME book are one position and must still add
+// up — a symbol can be held across products (MIS and NRML) within a book, and
+// scoping to a book must not be mistaken for scoping to a row.
+func TestOptionChainHeldQuantitySumsWithinABook(t *testing.T) {
+	expiries := nextWeekdays(1)
+	e := chainEngine(t, chainCSV([]float64{24500}, expiries))
+	e.handleTick(marketdata.Tick{TradingSymbol: "NIFTY 50", LastPrice: 24500})
+
+	chain, err := e.OptionChain("NIFTY", time.Time{}, 5, broker.BookReal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ceSymbol := chain.Rows[0].Call.TradingSymbol
+
+	e.mu.Lock()
+	e.positions = []broker.Position{
+		{TradingSymbol: ceSymbol, NetQuantity: -75, Product: broker.ProductMIS, Book: broker.BookReal},
+		{TradingSymbol: ceSymbol, NetQuantity: -75, Product: broker.ProductNRML, Book: broker.BookReal},
+	}
+	e.mu.Unlock()
+
+	chain, err = e.OptionChain("NIFTY", time.Time{}, 5, broker.BookReal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := chain.Rows[0].Call.Held; got != -150 {
+		t.Errorf("held = %d, want -150 — two products in one book are one position", got)
+	}
+}
+
 // TestOptionChainWithoutSpotStillRenders covers the moment right after login,
 // before the first tick — the page must show usable strikes rather than the
 // deepest out-of-the-money ones.
@@ -196,7 +279,7 @@ func TestOptionChainWithoutSpotStillRenders(t *testing.T) {
 	strikes := []float64{24000, 24100, 24200, 24300, 24400, 24500, 24600, 24700}
 	e := chainEngine(t, chainCSV(strikes, expiries))
 
-	chain, err := e.OptionChain("NIFTY", time.Time{}, 2)
+	chain, err := e.OptionChain("NIFTY", time.Time{}, 2, broker.BookPaper)
 	if err != nil {
 		t.Fatalf("OptionChain with no spot price: %v", err)
 	}
@@ -212,14 +295,14 @@ func TestOptionChainWithoutSpotStillRenders(t *testing.T) {
 
 func TestOptionChainNeedsInstruments(t *testing.T) {
 	e := newTestEngine()
-	if _, err := e.OptionChain("NIFTY", time.Time{}, 5); err == nil {
+	if _, err := e.OptionChain("NIFTY", time.Time{}, 5, broker.BookPaper); err == nil {
 		t.Error("a chain without an instrument master should fail clearly")
 	}
 }
 
 func TestOptionChainUnknownUnderlying(t *testing.T) {
 	e := chainEngine(t, chainCSV([]float64{24500}, nextWeekdays(1)))
-	if _, err := e.OptionChain("BANKNIFTY", time.Time{}, 5); err == nil {
+	if _, err := e.OptionChain("BANKNIFTY", time.Time{}, 5, broker.BookPaper); err == nil {
 		t.Error("an underlying with no contracts should report an error")
 	}
 }
@@ -230,7 +313,7 @@ func TestChainSymbolsCoversEverythingOnScreen(t *testing.T) {
 	e := chainEngine(t, chainCSV([]float64{24400, 24500, 24600}, nextWeekdays(1)))
 	e.handleTick(marketdata.Tick{TradingSymbol: "NIFTY 50", LastPrice: 24500})
 
-	chain, err := e.OptionChain("NIFTY", time.Time{}, 5)
+	chain, err := e.OptionChain("NIFTY", time.Time{}, 5, broker.BookPaper)
 	if err != nil {
 		t.Fatal(err)
 	}
