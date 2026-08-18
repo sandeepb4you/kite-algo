@@ -367,15 +367,10 @@ See `config.example.yaml` for all options with comments. Key sections:
 
 ## Known limitations
 
-- Realized P&L on **fully-closed** positions in *live* mode isn't reflected in
-  the in-memory day-P&L (Kite's `net` positions drop flat rows). Paper mode
-  tracks it correctly. `/history` computes from the `fills` table and is not
-  affected.
 - Orders do not record their execution price: `orders.price` is the *requested*
   price, so it is 0 for a market order. Fill prices live only in `fills`. Any
   history written before fills were persisted correctly is not reconstructible —
   `positions.average_price` is a per-symbol average, not a per-fill record.
-- No backtesting engine yet (tick/candle *recording* is in place; replay isn't).
 - **Backtests can only cover periods with an instrument snapshot.** Kite drops
   expired contracts from its feed, so a backtest over dates before this server
   first ran cannot resolve its option symbols. It fails loudly rather than
