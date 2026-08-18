@@ -22,6 +22,17 @@ Environment=KITE_BACKUP_DIR=/var/backups/kite-algo
 Environment=KITE_BACKUP_KEEP_DAYS=14
 Environment=KITE_BACKUP_KEEP_MONTHLY_DAYS=365
 
+# Offsite copy. An rclone remote name plus path — configure the remote itself with
+# `sudo rclone config` so no endpoint or credential lives in the repo. Leave this
+# empty and the job stays local-only.
+#
+# Local copies protect against corruption and bad deletes. They do NOT survive
+# losing the disk or the VM, and what is lost then is every day of captured option
+# data, which Kite will not sell back at any price.
+Environment=KITE_BACKUP_RCLONE_REMOTE=utho:kite-algo-backups
+# e.g. --bwlimit 10M
+Environment=KITE_BACKUP_RCLONE_FLAGS=
+
 # The script waits on a VACUUM INTO of a database that grows every trading day, so
 # no default timeout that a large database would eventually cross silently.
 TimeoutStartSec=45min

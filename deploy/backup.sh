@@ -29,6 +29,14 @@ KEEP_MONTHLY_DAYS="${KITE_BACKUP_KEEP_MONTHLY_DAYS:-365}"
 # night at two in the morning.
 APP_UID="${KITE_APP_UID:-10001}"
 
+# Offsite. An rclone remote NAME plus path, e.g. "utho:kite-algo-backups".
+# Configured on the host with `sudo rclone config`, so no endpoint and no
+# credential lives in this repo or in the image. Empty disables offsite entirely.
+RCLONE_REMOTE="${KITE_BACKUP_RCLONE_REMOTE:-}"
+# Extra rclone flags, unquoted on purpose so multiple flags work — e.g.
+# "--bwlimit 10M" to stay out of the way of market data if this ever runs by day.
+RCLONE_FLAGS="${KITE_BACKUP_RCLONE_FLAGS:-}"
+
 REPORT_SUCCESS="no"
 if [ "${1:-}" = "--report" ]; then REPORT_SUCCESS="yes"; fi
 # Report success once a week, decided here rather than by a second timer: two
@@ -131,8 +139,118 @@ find "$DEST_DIR" -maxdepth 1 -name 'trading-*-01.db.gz' \
 
 date -Iseconds > "$MARKER"
 
+# --- offsite ----------------------------------------------------------------
+#
+# Everything above this line protects against corruption, a bad delete, and
+# "yesterday was fine". None of it survives losing the box: the copy sits on the
+# same disk as the database. What is at stake is every day of captured option
+# data, which no amount of money buys back from Kite once the contracts expire.
+#
+# The remote is an rclone remote NAME, configured on the host, so no provider
+# endpoint or credential appears in this repo or in the image. At ~15 MB a night
+# compressed this is a rounding error in bandwidth either way.
+OFFSITE="no offsite configured"
+if [ -n "$RCLONE_REMOTE" ]; then
+  if ! command -v rclone >/dev/null 2>&1; then
+    notify "[CRITICAL] kite-algo backup: KITE_BACKUP_RCLONE_REMOTE is set to
+'$RCLONE_REMOTE' but rclone is not installed on $(hostname).
+
+The LOCAL copy is fine — $ON_HOST.gz — but nothing is leaving this box, so a disk
+or VM loss takes every day of captured option data with it."
+    echo "rclone not installed; offsite skipped" >&2
+    exit 1
+  fi
+
+  echo "==> uploading to $RCLONE_REMOTE"
+  UPLOAD_LOG=$(mktemp)
+  # copyto rather than copy: an explicit destination name cannot silently become
+  # a directory if the remote path is mistyped. rclone verifies the checksum
+  # after upload for S3-compatible backends, so a zero exit already means the
+  # bytes arrived intact.
+  if ! rclone copyto $RCLONE_FLAGS \
+      "$ON_HOST.gz" "$RCLONE_REMOTE/$(basename "$ON_HOST.gz")" \
+      >"$UPLOAD_LOG" 2>&1; then
+    notify "[CRITICAL] kite-algo offsite upload FAILED on $(hostname).
+
+The LOCAL copy is safe — $(basename "$ON_HOST.gz") — so nothing is lost today, but
+the offsite copy is missing and a disk or VM loss would be unrecoverable.
+
+rclone said:
+$(tail -5 "$UPLOAD_LOG")"
+    echo "offsite upload failed:" >&2
+    cat "$UPLOAD_LOG" >&2
+    rm -f "$UPLOAD_LOG"
+    exit 1
+  fi
+  rm -f "$UPLOAD_LOG"
+
+  # Confirm the object is actually there at the right size. rclone's own
+  # checksum check is the real guarantee; this catches the case where it wrote
+  # somewhere other than where we think it did, which a checksum cannot.
+  REMOTE_BYTES=$(rclone lsl "$RCLONE_REMOTE/$(basename "$ON_HOST.gz")" 2>/dev/null \
+    | awk '{print $1}' | head -1)
+  if [ "${REMOTE_BYTES:-0}" != "$GZ_BYTES" ]; then
+    notify "[CRITICAL] kite-algo offsite copy is the wrong size on $(hostname).
+
+Local $(basename "$ON_HOST.gz") is $GZ_BYTES bytes, the remote object reports
+${REMOTE_BYTES:-nothing}. Treat the offsite copy for today as absent."
+    echo "offsite size mismatch: local=$GZ_BYTES remote=${REMOTE_BYTES:-none}" >&2
+    exit 1
+  fi
+
+  echo "==> pruning $RCLONE_REMOTE"
+  # Deliberately NOT `rclone delete` with --filter rules.
+  #
+  # This is the one destructive step in the job, and rclone's include/exclude
+  # rules are order-dependent in a way that is easy to get subtly wrong. A filter
+  # that silently fails to match does not error — it widens the delete, and the
+  # thing being widened is the set of backups. So the decision is made here, one
+  # object at a time, and rclone is only ever told to remove a specific name.
+  #
+  # Age comes from the FILENAME, not from the object's timestamp: a remote mtime
+  # is upload time, so a re-upload would make an old backup look new and exempt
+  # itself from pruning forever.
+  #
+  # Verified behaviour at the defaults (14 daily / 365 monthly), as of today
+  # being 2026-08-18:
+  #
+  #   trading-2026-08-18.db.gz     0d    keep
+  #   trading-2026-08-04.db.gz    14d    keep    (boundary is inclusive)
+  #   trading-2026-08-03.db.gz    15d    PRUNE
+  #   trading-2026-07-01.db.gz    48d    keep    (month-start, 365d limit)
+  #   trading-2025-08-01.db.gz   382d    PRUNE   (month-start, past its limit)
+  #   trading-2025-08-17.db.gz   366d    PRUNE
+  #   notes.txt                     -    untouched, not ours
+  #   trading-bogus.db.gz           -    untouched, unparseable date
+  TODAY_EPOCH=$(date +%s)
+  while read -r obj; do
+    case "$obj" in
+      trading-????-??-??.db.gz) ;;
+      *) continue ;;   # not ours; never touch it
+    esac
+    day=${obj#trading-}
+    day=${day%.db.gz}
+    obj_epoch=$(date -d "$day" +%s 2>/dev/null) || continue
+    age_days=$(( (TODAY_EPOCH - obj_epoch) / 86400 ))
+
+    limit=$KEEP_DAYS
+    case "$day" in
+      *-01) limit=$KEEP_MONTHLY_DAYS ;;   # month-start copies live much longer
+    esac
+
+    if [ "$age_days" -gt "$limit" ]; then
+      echo "    pruning $obj (${age_days}d old, limit ${limit}d)"
+      rclone deletefile "$RCLONE_REMOTE/$obj" || true
+    fi
+  done < <(rclone lsf "$RCLONE_REMOTE" 2>/dev/null || true)
+
+  REMOTE_COUNT=$(rclone lsf "$RCLONE_REMOTE" 2>/dev/null | grep -c '^trading-.*\.db\.gz$' || true)
+  OFFSITE="offsite OK ($RCLONE_REMOTE, $REMOTE_COUNT copies)"
+fi
+
 RATIO=$(awk "BEGIN{printf \"%.1f\", $RAW_BYTES/$GZ_BYTES}")
-SUMMARY="$(summarize) (${RATIO}x compression)"
+SUMMARY="$(summarize) (${RATIO}x compression)
+$OFFSITE"
 echo "$SUMMARY"
 if [ "$REPORT_SUCCESS" = "yes" ]; then
   notify "$SUMMARY"

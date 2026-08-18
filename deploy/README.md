@@ -377,7 +377,90 @@ of a multi-gigabyte database is tens of GB by year end. Three ways to handle it:
 Check headroom with `df -h /var/backups/kite-algo`. The job warns through Telegram
 below 2 GB free rather than waiting to fail.
 
+### Offsite copy (Utho object storage)
+
+Everything above protects against corruption, a bad delete, and "yesterday was
+fine". None of it survives losing the disk or the VM — the copy sits beside the
+database. At ~15 MB a night compressed, offsite is nearly free.
+
+The job takes an rclone **remote name**, so no endpoint and no credential appears in
+this repo or in the image.
+
+**1. Create the bucket and an access key** in the Utho console. It gives you an
+access key and a secret once; the secret is not shown again.
+
+**2. Install rclone and configure the remote as root** — the timer runs as root, so
+the config must be root's (`/root/.config/rclone/rclone.conf`), not your user's:
+
+```sh
+sudo dnf install -y rclone      # or: curl https://rclone.org/install.sh | sudo bash
+sudo rclone config
+```
+
+Choose `n` (new remote), name it `utho`, pick **`s3`**, then **"Any other
+S3 compatible provider"**. Or write the file directly:
+
+```ini
+[utho]
+type = s3
+provider = Other
+access_key_id = <from the Utho console>
+secret_access_key = <from the Utho console>
+endpoint = https://innoida.utho.io
+region = innoida
+```
+
+The endpoint is **per datacentre** — `innoida` is Delhi/Noida. Confirm yours in the
+Utho console rather than trusting this line; a wrong endpoint fails loudly on the
+first upload, which is the good case, but there is no reason to find out that way.
+If uploads fail with signature or addressing errors, add `force_path_style = true`.
+
+**3. Verify the remote before wiring it in:**
+
+```sh
+sudo rclone lsd utho:
+sudo rclone mkdir utho:kite-algo-backups
+echo hello | sudo rclone rcat utho:kite-algo-backups/probe.txt
+sudo rclone cat utho:kite-algo-backups/probe.txt
+sudo rclone deletefile utho:kite-algo-backups/probe.txt
+```
+
+**4. Point the job at it.** `KITE_BACKUP_RCLONE_REMOTE` is already set to
+`utho:kite-algo-backups` in the unit file; adjust the bucket name if yours differs,
+then:
+
+```sh
+sudo systemctl daemon-reload
+sudo rm -f /var/backups/kite-algo/trading-$(date +%F).db.gz   # so it redoes today
+sudo systemctl start kite-backup.service
+journalctl -u kite-backup -n 40 --no-pager
+```
+
+The log should show `==> uploading`, then `==> pruning`, and the summary line ends
+with `offsite OK (utho:kite-algo-backups, N copies)`.
+
+Leave `KITE_BACKUP_RCLONE_REMOTE` empty to go back to local-only.
+
+**How offsite failures are treated.** An upload failure alerts and fails the unit,
+but says explicitly that the *local* copy is safe — those are different
+emergencies. After uploading, the object's size is compared against the local file:
+rclone verifies checksums itself, but that cannot catch writing to a different path
+than intended, and a size check can.
+
+Remote pruning mirrors the local retention and is deliberately not `rclone delete`
+with filter rules. It lists the bucket, decides one object at a time from the date
+in the filename, and only ever names a specific object to remove. rclone's
+include/exclude rules are order-dependent, a rule that silently fails to match
+widens the delete rather than erroring, and the set being widened is the backups.
+The verified decision table is in a comment in `backup.sh`.
+
 ### Restoring
+
+If the local copy is gone too, fetch it first:
+
+```sh
+sudo rclone copy utho:kite-algo-backups/trading-2026-08-19.db.gz /var/backups/kite-algo/
+```
 
 ```sh
 gunzip -c /var/backups/kite-algo/trading-2026-08-19.db.gz > /tmp/restored.db
