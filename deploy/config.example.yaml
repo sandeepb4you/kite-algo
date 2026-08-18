@@ -105,7 +105,9 @@ notify:
     chat_id: ""
     # bot_token belongs in the SECRETS file, not here — it is a credential.
     # How long to wait before repeating an alert that is still unresolved.
-    # 0 means say it once and stay quiet.
+    # Omit the key for the 30m default; 0 says it once and stays quiet.
+    # Accepts 30m, 90s, 1h30m or 0 — a bare number without a unit is refused,
+    # because "30" could mean either seconds or minutes.
     repeat_every: 30m
 
 risk:

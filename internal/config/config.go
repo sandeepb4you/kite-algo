@@ -116,6 +116,43 @@ type WebConfig struct {
 	TickIntervalMS int `yaml:"tick_interval_ms"`
 }
 
+// Interval is a duration that survives being written the obvious way.
+//
+// yaml.v3 decodes a time.Duration field only from a duration STRING, so a bare
+// `repeat_every: 0` — which is exactly what the documentation for this field told
+// operators to write for "do not repeat" — fails to parse and takes the whole
+// process down in a crash loop at startup. A notification setting must not be able
+// to do that.
+//
+// Decoding via string and handing the result to time.ParseDuration accepts every
+// spelling an operator would reach for: 30m, 90s, 1h30m, 0s, and a bare 0, which
+// ParseDuration special-cases. A bare non-zero number is still refused, and should
+// be: `repeat_every: 30` has no defensible reading.
+//
+// Set records whether the key was present at all, which is the other half. Absent
+// must mean "use the default" while an explicit zero means "off", and a plain
+// time.Duration cannot tell those apart — the same trap that made a configured
+// max_lots_per_trade of 0 come back as a cap of one lot.
+type Interval struct {
+	D   time.Duration
+	Set bool
+}
+
+// UnmarshalYAML accepts a duration string, or 0.
+func (i *Interval) UnmarshalYAML(n *yaml.Node) error {
+	var raw string
+	if err := n.Decode(&raw); err != nil {
+		return fmt.Errorf("expected a duration like 30m (or 0 for none): %w", err)
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("%q is not a duration: write it as 30m, 90s, 1h30m, "+
+			"or 0 to disable", raw)
+	}
+	i.D, i.Set = d, true
+	return nil
+}
+
 // NotifyConfig configures outbound operator alerts.
 //
 // One channel today. The point of the section is that alerting is a property of
@@ -139,7 +176,7 @@ type TelegramConfig struct {
 	ChatID string `yaml:"chat_id"`
 
 	// RepeatEvery is how long to wait before re-sending an alert that is still
-	// unresolved. Default 30m.
+	// unresolved. Omit it for the 30m default; 0 disables repeats entirely.
 	//
 	// Repeating at all is a deliberate choice: the failure this guards against
 	// is not "was never told", it is "was told at 09:15 and did not act", and a
@@ -147,7 +184,7 @@ type TelegramConfig struct {
 	// as no message. Repeating too fast is the opposite failure — an alert that
 	// buzzes every minute is one that gets muted, permanently, and then the
 	// channel is worse than useless because it looks like it is working.
-	RepeatEvery time.Duration `yaml:"repeat_every"`
+	RepeatEvery Interval `yaml:"repeat_every"`
 }
 
 // LogConfig controls logging.
@@ -496,8 +533,10 @@ func (c *Config) applyDefaults() {
 		c.Kite.MarketProtection > 100 {
 		c.Kite.MarketProtection = -1
 	}
-	if c.Notify.Telegram.RepeatEvery == 0 {
-		c.Notify.Telegram.RepeatEvery = 30 * time.Minute
+	// Only when the key is absent. An explicit 0 means "tell me once", and
+	// overwriting it here would be the max_lots_per_trade bug again.
+	if !c.Notify.Telegram.RepeatEvery.Set {
+		c.Notify.Telegram.RepeatEvery = Interval{D: 30 * time.Minute, Set: true}
 	}
 	if c.Web.SessionTTL == 0 {
 		c.Web.SessionTTL = 30 * 24 * time.Hour

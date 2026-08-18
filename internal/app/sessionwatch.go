@@ -77,7 +77,7 @@ func (a *App) startSessionWatch(ctx context.Context, out alerter) {
 	}
 	if a.Log != nil {
 		a.Log.Info("telegram alerts active",
-			"repeat_every", a.Cfg.Notify.Telegram.RepeatEvery,
+			"repeat_every", a.Cfg.Notify.Telegram.RepeatEvery.D,
 			"capture_deadline", a.Cfg.Capture.RunAt+" IST")
 	}
 	go a.watchSession(ctx, out)
@@ -119,7 +119,7 @@ func (a *App) checkSessionAlert(ctx context.Context, out alerter) {
 
 	level := alert.Level()
 	reason := sessionAlertSendReason(level, today, state,
-		time.Now(), a.Cfg.Notify.Telegram.RepeatEvery)
+		time.Now(), a.Cfg.Notify.Telegram.RepeatEvery.D)
 	if reason == reasonNone {
 		return
 	}

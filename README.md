@@ -334,7 +334,8 @@ looks broken when this happens: pages still render, strategies still list, and t
 history with them and Kite will not serve it again.
 
 The alert fires once the exchange is open, repeats every `repeat_every` while
-unresolved, escalates the moment the capture deadline passes (that is a different
+unresolved (write it as `30m`, `90s`, `1h30m`, or `0` for no repeats — a bare
+number without a unit is refused, since `30` could mean seconds or minutes), escalates the moment the capture deadline passes (that is a different
 problem — data is already gone), and sends one message when the session comes
 back. Silent on weekends and configured holidays.
 
@@ -362,7 +363,7 @@ every minute, so only a *change* of outcome is announced.
      telegram:
        enabled: true
        chat_id: "123456789"   # a NUMBER, not the @name
-       repeat_every: 30m      # 0 = say it once
+       repeat_every: 30m      # omit for the 30m default; 0 = say it once
    ```
 
 5. Open the bot in Telegram and press **Start** — a bot cannot message a user who

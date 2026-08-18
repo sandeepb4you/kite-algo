@@ -112,7 +112,8 @@ func notifyTestApp(t *testing.T) *App {
 	a.Cfg.Capture.Enabled = true
 	a.Cfg.Capture.RunAt = "15:40"
 	a.Cfg.Notify.Telegram = config.TelegramConfig{
-		Enabled: true, BotToken: "t", ChatID: "1", RepeatEvery: 30 * time.Minute,
+		Enabled: true, BotToken: "t", ChatID: "1",
+		RepeatEvery: config.Interval{D: 30 * time.Minute, Set: true},
 	}
 	return a
 }
