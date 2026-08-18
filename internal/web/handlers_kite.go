@@ -90,7 +90,7 @@ type pageView struct {
 	// on every page rather than one: the dashboard redirects to /connect when
 	// disconnected, so a warning there could never appear, and a token that
 	// lapses mid-session leaves the operator on some other page entirely.
-	Session sessionAlert
+	Session app.SessionAlert
 	// Orphan warns when strategy positions are open with nothing managing them,
 	// which is what a restart leaves behind when a strategy cannot be restored.
 	Orphan orphanAlert
@@ -114,7 +114,7 @@ func (s *Server) renderPage(w http.ResponseWriter, r *http.Request, tmpl, title 
 		Nav:     strings.TrimPrefix(r.URL.Path, "/"),
 		Data:    data,
 		Build:   buildID,
-		Session: s.sessionAlertFor(r),
+		Session: s.app.SessionAlert(r.Context()),
 		Orphan:  s.orphanAlertFor(r),
 	}
 	if err := s.render.Render(w, http.StatusOK, tmpl, v); err != nil {

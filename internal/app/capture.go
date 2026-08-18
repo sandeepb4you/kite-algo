@@ -58,7 +58,14 @@ func (a *App) startCapture(ctx context.Context) {
 	sched, err := history.NewCaptureScheduler(
 		a.Cfg.Capture.RunAt,
 		func(ctx context.Context, day time.Time) (history.CaptureReport, error) {
-			return a.captureDay(ctx, store, day)
+			rep, err := a.captureDay(ctx, store, day)
+			// Announce here rather than inside captureDay, so the headless
+			// `-capture` path stays silent: that one prints its report to a
+			// terminal somebody is already watching. This wraps the SCHEDULED
+			// run and the /options "capture now" button, both of which finish
+			// with nobody looking.
+			a.notifyCaptureDone(ctx, rep, err)
+			return rep, err
 		},
 		// Ready means a live session AND a loaded master. Capture resolves
 		// contracts through the master and fetches with the session's token;

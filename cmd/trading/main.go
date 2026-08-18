@@ -41,6 +41,7 @@ import (
 	"kite-algo/internal/config"
 	"kite-algo/internal/history"
 	"kite-algo/internal/logger"
+	"kite-algo/internal/notify"
 	"kite-algo/internal/storage/sqlite"
 	"kite-algo/internal/web"
 )
@@ -63,6 +64,8 @@ func run() error {
 	captureDay := flag.String("capture", "",
 		"capture option candles for one day (YYYY-MM-DD, or 'last' for the most "+
 			"recent trading day) and exit; requires a persisted Zerodha session")
+	notifyTest := flag.Bool("notify-test", false,
+		"send a test message to the configured alert channel and exit")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -85,6 +88,13 @@ func run() error {
 
 	log := logger.New(os.Stderr, cfg.LogLevel(), cfg.Log.Format)
 	logger.Init(log)
+
+	// Before the database, the engine and the network: this is a one-shot check
+	// of one credential, and it has to be runnable on a box where the rest is
+	// still broken.
+	if *notifyTest {
+		return sendTestAlert(cfg, log)
+	}
 
 	log.Info("=== trading platform starting ===",
 		"mode", cfg.Mode, "pid", os.Getpid(),
@@ -389,10 +399,58 @@ kite:
 # Web UI operator password. Set it with 'tradebot -set-password'.
 web:
   password_hash: ""
+
+# Telegram bot token for operator alerts, from @BotFather. Optional.
+# The rest of the alert settings (enabled, chat_id, repeat_every) live in
+# config.yaml; only the token is a credential and belongs here.
+# Verify delivery with 'tradebot -notify-test'.
+notify:
+  telegram:
+    bot_token: ""
 `
 	if err := os.WriteFile(p, []byte(tmpl), 0o600); err != nil {
 		return fmt.Errorf("write secrets: %w", err)
 	}
+	return nil
+}
+
+// sendTestAlert proves the alert channel works, which is the one thing about it
+// an operator cannot verify by waiting.
+//
+// The alert this exists for fires at most once a day and only when something has
+// already gone wrong, so a wrong bot token would otherwise be discovered on the
+// morning it was needed, by its silence. Failures here name what to fix: a wrong
+// chat_id and a bot the user never pressed Start on are both an HTTP 400 from
+// Telegram, and they have different remedies.
+func sendTestAlert(cfg *config.Config, log *slog.Logger) error {
+	t := cfg.Notify.Telegram
+	if !t.Enabled {
+		log.Warn("notify.telegram.enabled is false — sending anyway, since you asked")
+	}
+	tg := notify.NewTelegram(t.BotToken, t.ChatID, log)
+	if !tg.Configured() {
+		return fmt.Errorf("telegram is not configured: needs notify.telegram.bot_token " +
+			"in the secrets file and notify.telegram.chat_id in config.yaml")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	msg := "kite-algo alert test — if you can read this, the daily login alert will reach you."
+	if url := strings.TrimRight(strings.TrimSpace(cfg.Web.PublicURL), "/"); url != "" {
+		msg += "\n\nLog in: " + url + "/connect"
+	} else {
+		msg += "\n\nNote: web.public_url is unset, so real alerts will carry no login link."
+	}
+
+	if err := tg.Send(ctx, msg); err != nil {
+		return fmt.Errorf("%w\n\nCommon causes:\n"+
+			"  - chat_id is wrong: it is a NUMBER, not the @name — message @userinfobot to get yours\n"+
+			"  - the bot has never been started: open it in Telegram and press Start\n"+
+			"  - bot_token is wrong or revoked: re-issue it with @BotFather", err)
+	}
+	log.Info("test alert delivered", "chat_id", t.ChatID)
+	fmt.Println("sent — check Telegram")
 	return nil
 }
 

@@ -23,6 +23,7 @@ import (
 	"kite-algo/internal/engine"
 	"kite-algo/internal/events"
 	"kite-algo/internal/history"
+	"kite-algo/internal/notify"
 	"kite-algo/internal/risk"
 	"kite-algo/internal/storage"
 	"kite-algo/internal/strategy"
@@ -62,6 +63,12 @@ type App struct {
 
 	// capture is the daily option-candle job, nil when disabled in config.
 	capture *history.CaptureScheduler
+
+	// alerts is the outbound channel for operator notifications, or nil when
+	// none is configured. Held rather than passed around because two unrelated
+	// things now push to it — the missing-session watcher and the capture
+	// summary — and they must not each build their own.
+	alerts alerter
 
 	mu       sync.RWMutex
 	liveMode bool // true once the live broker has been swapped in
@@ -211,8 +218,18 @@ func (a *App) Run(ctx context.Context) error {
 	go a.guardSweep(ctx)
 	go a.marginLoop(ctx)
 	go a.WatchRealPnL(ctx)
+	// Outbound alerting, before the jobs that push to it.
+	if tg := notify.NewTelegram(
+		a.Cfg.Notify.Telegram.BotToken, a.Cfg.Notify.Telegram.ChatID, a.Log,
+	); a.Cfg.Notify.Telegram.Enabled && tg.Configured() {
+		a.alerts = tg
+	}
+
 	a.startCapture(ctx)
 	a.startExpirySweeper(ctx)
+	// Started before the token restore below, so a boot that comes up with no
+	// usable session still produces the alert about it.
+	a.startSessionWatch(ctx, a.alerts)
 
 	// Restore the persisted Zerodha token only once the engine is running.
 	//

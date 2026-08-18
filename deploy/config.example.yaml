@@ -62,6 +62,22 @@ capture:
       index: "SENSEX"
   holidays: []
 
+# Outbound alerts. Optional, and off unless enabled.
+#
+# The daily Zerodha login is the one routine failure with permanent
+# consequences: the token dies around 06:00 IST, the UI keeps serving pages as
+# though nothing were wrong, and the 15:40 capture quietly does nothing.
+# Contracts that expire that day take their price history with them.
+notify:
+  telegram:
+    enabled: false
+    # chat_id is a NUMBER, not an @name. Message @userinfobot to get yours.
+    chat_id: ""
+    # bot_token belongs in the SECRETS file, not here — it is a credential.
+    # How long to wait before repeating an alert that is still unresolved.
+    # 0 means say it once and stay quiet.
+    repeat_every: 30m
+
 risk:
   max_daily_loss: 5000
   # 0 = no limit. Sizing caps are off by choice; the daily loss cap is the

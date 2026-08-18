@@ -316,8 +316,62 @@ See `config.example.yaml` for all options with comments. Key sections:
 | `risk`    | `max_daily_loss`, `max_open_positions`, `max_order_value`, `max_lots_per_trade` |
 | `recording.ticks` | record every tick (huge) for backtesting          |
 | `capture`  | daily option-candle capture (see below) — the only way expiring contracts ever become backtestable |
+| `notify.telegram` | operator alerts: missing daily login, capture result (see below) |
 | `storage.sqlite_path` | DB file location                                  |
 | `strategies` | list of `{name, enabled, params}` for each strategy     |
+
+---
+
+## Alerts — `notify.telegram`
+
+Two things happen unattended and cost data when they go wrong. Both push to
+Telegram when it is configured.
+
+**The daily Zerodha login.** Access tokens die around 06:00 IST and can only be
+renewed through a browser, so every trading day starts with no session. Nothing
+looks broken when this happens: pages still render, strategies still list, and the
+15:40 capture quietly does nothing. Contracts expiring that day take their price
+history with them and Kite will not serve it again.
+
+The alert fires once the exchange is open, repeats every `repeat_every` while
+unresolved, escalates the moment the capture deadline passes (that is a different
+problem — data is already gone), and sends one message when the session comes
+back. Silent on weekends and configured holidays.
+
+**The daily capture result.** One message per day with the per-underlying
+breakdown, or a loud one naming the cause if it failed. A failed capture retries
+every minute, so only a *change* of outcome is announced.
+
+### Setup
+
+1. Message `@BotFather` in Telegram, `/newbot`, and copy the token.
+2. Message `@userinfobot` to get your numeric chat ID.
+3. Put the token in the **secrets** file, not `config.yaml` — it is a credential,
+   and on the deployed box `conf/` is world-readable by design:
+
+   ```yaml
+   notify:
+     telegram:
+       bot_token: "8123456:AA..."
+   ```
+
+4. In `config.yaml`:
+
+   ```yaml
+   notify:
+     telegram:
+       enabled: true
+       chat_id: "123456789"   # a NUMBER, not the @name
+       repeat_every: 30m      # 0 = say it once
+   ```
+
+5. Open the bot in Telegram and press **Start** — a bot cannot message a user who
+   has never started it.
+6. Verify: `tradebot -notify-test`. On the deployed box,
+   `docker compose run --rm app -notify-test`.
+
+`web.public_url` is used to put a login link in the alert. Without it the alert
+still sends, minus the link.
 
 ---
 

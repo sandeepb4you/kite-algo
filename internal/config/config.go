@@ -44,6 +44,9 @@ type Config struct {
 	// "" to disable.
 	SecretsPath string `yaml:"secrets_path"`
 
+	// Notify configures outbound alerts. Absent means no alerting, which is
+	// the pre-existing behaviour.
+	Notify     NotifyConfig  `yaml:"notify"`
 	Recording  RecordConfig  `yaml:"recording"`
 	Capture    CaptureConfig `yaml:"capture"`
 	Storage    StorageConfig `yaml:"storage"`
@@ -111,6 +114,40 @@ type WebConfig struct {
 	// browsers. Default 200ms (~5 updates/sec) — fast enough to read, far below
 	// the raw tick rate of an option chain.
 	TickIntervalMS int `yaml:"tick_interval_ms"`
+}
+
+// NotifyConfig configures outbound operator alerts.
+//
+// One channel today. The point of the section is that alerting is a property of
+// the deployment rather than of the alert: the missing-session warning already
+// existed as a banner, and this only decides where else it goes.
+type NotifyConfig struct {
+	Telegram TelegramConfig `yaml:"telegram"`
+}
+
+// TelegramConfig is a bot token, a chat, and how often to repeat an unresolved
+// alert.
+type TelegramConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	// BotToken authenticates as the bot. Like web.password_hash it belongs in
+	// the SECRETS file, not here — a bot token is a credential, and conf/ is
+	// deliberately world-readable on the deployed box.
+	BotToken string `yaml:"bot_token"`
+
+	// ChatID is the destination. Not a secret, but useless on its own.
+	ChatID string `yaml:"chat_id"`
+
+	// RepeatEvery is how long to wait before re-sending an alert that is still
+	// unresolved. Default 30m.
+	//
+	// Repeating at all is a deliberate choice: the failure this guards against
+	// is not "was never told", it is "was told at 09:15 and did not act", and a
+	// single message that arrives during the commute fails exactly as silently
+	// as no message. Repeating too fast is the opposite failure — an alert that
+	// buzzes every minute is one that gets muted, permanently, and then the
+	// channel is worse than useless because it looks like it is working.
+	RepeatEvery time.Duration `yaml:"repeat_every"`
 }
 
 // LogConfig controls logging.
@@ -358,6 +395,11 @@ func (c *Config) loadSecrets() error {
 		Web  struct {
 			PasswordHash string `yaml:"password_hash"`
 		} `yaml:"web"`
+		Notify struct {
+			Telegram struct {
+				BotToken string `yaml:"bot_token"`
+			} `yaml:"telegram"`
+		} `yaml:"notify"`
 	}
 	if err := yaml.Unmarshal(data, &s); err != nil {
 		return fmt.Errorf("parse secrets %s: %w", p, err)
@@ -374,6 +416,9 @@ func (c *Config) loadSecrets() error {
 	}
 	if s.Web.PasswordHash != "" {
 		c.Web.PasswordHash = s.Web.PasswordHash
+	}
+	if s.Notify.Telegram.BotToken != "" {
+		c.Notify.Telegram.BotToken = s.Notify.Telegram.BotToken
 	}
 	return nil
 }
@@ -450,6 +495,9 @@ func (c *Config) applyDefaults() {
 	if c.Kite.MarketProtection == 0 || c.Kite.MarketProtection < -1 ||
 		c.Kite.MarketProtection > 100 {
 		c.Kite.MarketProtection = -1
+	}
+	if c.Notify.Telegram.RepeatEvery == 0 {
+		c.Notify.Telegram.RepeatEvery = 30 * time.Minute
 	}
 	if c.Web.SessionTTL == 0 {
 		c.Web.SessionTTL = 30 * 24 * time.Hour

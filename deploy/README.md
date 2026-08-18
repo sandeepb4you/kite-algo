@@ -270,6 +270,30 @@ docker compose run --rm app -config /etc/kite-algo/config.yaml -capture 2026-08-
 docker compose up -d app
 ```
 
+
+## Alerts
+
+The missing-login and capture-result alerts go to Telegram. The bot token is a
+credential, so it lives in `secrets/secrets.yaml` alongside the Kite keys — not in
+`conf/config.yaml`, which is deliberately world-readable:
+
+```yaml
+notify:
+  telegram:
+    bot_token: "8123456:AA..."
+```
+
+`enabled`, `chat_id` and `repeat_every` go in `conf/config.yaml`. Verify delivery
+without waiting for a real alert:
+
+```sh
+docker compose run --rm app -config /etc/kite-algo/config.yaml -notify-test
+```
+
+That reads the same mounted config and secrets the service does, so a success here
+means the running container can send too. Press Start in the bot first — Telegram
+refuses messages to a user who has never started it.
+
 `-config` is required here — `compose run` replaces the CMD, and without it the
 capture scope silently falls back to defaults instead of your configured
 underlyings, expiries and strike range.
