@@ -32,8 +32,10 @@
       .then(function (html) {
         if (html === null) return;
         el.innerHTML = html;
-        // Newly swapped-in markup may contain forms (order cancel buttons).
+        // Newly swapped-in markup may contain forms (order cancel buttons) and
+        // cascading selects (the chain's underlying/expiry controls).
         wireForms(el);
+        wireCascades(el);
         refreshCounts();
         // Let ws.js re-derive its subscription set from the new DOM.
         document.body.dispatchEvent(new CustomEvent("fragment-swapped"));
@@ -48,6 +50,7 @@
     wireForms(document);
     wireSearch();
     wireStrategyParams();
+    wireCascades(document);
 
     document.querySelectorAll("[data-poll]").forEach(function (el) {
       swap(el);
@@ -326,16 +329,50 @@
     if (pickContract(cell)) ev.preventDefault();
   });
 
-  // The chain selectors submit their form on change, which the CSP forbids
-  // doing with an inline onchange attribute. A visible Load button is the
-  // no-JavaScript path; this just saves the extra click.
-  document.addEventListener("change", function (ev) {
-    var el = ev.target;
-    if (el && el.form && el.form.classList.contains("chain-controls") &&
-        (el.id === "underlying" || el.id === "expiry")) {
-      el.form.submit();
-    }
-  });
+  // --- cascading filter forms -----------------------------------------------
+  //
+  // Forms where each choice narrows the next — the options browser's day →
+  // underlying → expiry → strike, and the chain's underlying → expiry. They are
+  // plain GET forms answered by the server, so they work with scripting off; the
+  // Load button is that path and stays. This removes the extra click.
+  //
+  // data-cascade lists the field ids in narrowing order, in the template where
+  // the fields are, so the ordering lives next to the markup it describes.
+  //
+  // Clearing the downstream fields is the part that matters, not the submit. The
+  // selects keep whatever was chosen at the previous level, so changing the
+  // underlying while an expiry from the OLD underlying is still selected submits
+  // a combination that never existed — and the options page answers that with
+  // "no NIFTY contracts expiring 2026-09-25 in that snapshot" instead of simply
+  // offering the new underlying's expiries. The operator sees an error for having
+  // done nothing wrong.
+  //
+  // Inline onchange is not an option: the page's own CSP forbids it.
+  function wireCascades(root) {
+    root.querySelectorAll("form[data-cascade]").forEach(function (form) {
+      if (form.__cascade) return;
+      form.__cascade = true;
+
+      var order = (form.getAttribute("data-cascade") || "").split(/\s+/)
+        .filter(function (s) { return s; });
+
+      form.addEventListener("change", function (ev) {
+        var el = ev.target;
+        if (!el || !el.name) return;
+
+        var at = order.indexOf(el.id);
+        if (at >= 0) {
+          for (var i = at + 1; i < order.length; i++) {
+            var next = form.querySelector("#" + order[i]);
+            // Every cascading select carries an empty "— choose —" option, so
+            // clearing to "" is a valid state the server understands as unset.
+            if (next) next.value = "";
+          }
+        }
+        form.submit();
+      });
+    });
+  }
 
   // --- instrument typeahead -----------------------------------------------
 

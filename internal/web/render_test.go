@@ -1042,3 +1042,60 @@ func TestEmptyTicketHidesThePriceCell(t *testing.T) {
 		t.Error("empty symbol would be subscribed to")
 	}
 }
+
+// The narrowing filters must load on their own, and must clear what they
+// invalidate.
+//
+// data-cascade is the whole mechanism: it names the fields in narrowing order, so
+// changing one clears everything downstream before submitting. Losing the
+// attribute silently returns the page to needing a Load click, and losing the
+// ORDER silently reintroduces the stale-selection error — switching underlying
+// with an old expiry still selected makes /options answer "no NIFTY contracts
+// expiring 2026-09-25 in that snapshot" instead of offering the new expiries.
+func TestNarrowingFormsDeclareTheirCascade(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("options browser", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		v := pageView{Status: app.Status{Mode: "paper"}, CSRF: "x", Data: optionsData{
+			Date:        "2026-08-19",
+			Underlyings: []string{"NIFTY", "SENSEX"},
+			Intervals:   kite.Intervals,
+			Interval:    "5minute",
+		}}
+		if err := r.Render(w, 200, "options.html", v); err != nil {
+			t.Fatal(err)
+		}
+		body := w.Body.String()
+
+		if !strings.Contains(body, `data-cascade="date underlying expiry strike"`) {
+			t.Error("the options filters do not declare their narrowing order")
+		}
+		// The Load button stays: it is the no-JavaScript path.
+		if !strings.Contains(body, ">Load<") {
+			t.Error("the no-script Load button was removed")
+		}
+	})
+
+	t.Run("option chain", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		v := pageView{Status: app.Status{Mode: "paper"}, CSRF: "x", Data: tradeData{
+			Chain: engine.OptionChain{
+				Underlying: "NIFTY", Expiry: time.Now().AddDate(0, 0, 3),
+				Expiries:    []time.Time{time.Now().AddDate(0, 0, 3)},
+				Underlyings: []string{"NIFTY"},
+			},
+		}}
+		if err := r.Render(w, 200, "chain_fragment.html", v); err != nil {
+			t.Fatal(err)
+		}
+		body := w.Body.String()
+
+		if !strings.Contains(body, `data-cascade="underlying expiry"`) {
+			t.Error("the chain selectors do not declare their narrowing order")
+		}
+	})
+}

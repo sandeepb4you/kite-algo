@@ -9,7 +9,12 @@
     longer resolve or sell, still open here. Nothing on this page hits the API.
   </p>
 
-  <form method="get" action="/options">
+  {{/* data-cascade lists the fields in narrowing order: changing one clears
+       everything downstream of it and reloads. Without the clearing, switching
+       underlying would submit the previous underlying's expiry and the page would
+       answer with an error instead of the new expiries. Interval is absent on
+       purpose — it re-reads the same contract rather than narrowing it. */}}
+  <form method="get" action="/options" data-cascade="date underlying expiry strike">
     <div class="row">
       <div>
         <label for="date">Trading day</label>
@@ -58,7 +63,7 @@
 
     <button class="btn btn-primary" type="submit">Load</button>
     <p class="muted small">
-      Each choice narrows the next. Pick a day and submit to see which
+      Each choice narrows the next and loads on its own: pick a day to see which
       underlyings that snapshot held, then its expiries, then its strikes.
       {{if .Data.Strikes}}
         A <b>●</b> marks a strike with captured data —

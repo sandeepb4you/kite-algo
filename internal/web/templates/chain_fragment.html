@@ -25,7 +25,8 @@
 
 {{/* Submits back to the page it is rendered on, so picking a contract on
      the live desk keeps you on the live desk. */}}
-<form method="get" action="{{.Data.PageURL}}" class="chain-controls">
+<form method="get" action="{{.Data.PageURL}}" class="chain-controls"
+      data-cascade="underlying expiry">
   <label for="underlying">Underlying</label>
   <select id="underlying" name="underlying">
     {{if not $c.Underlyings}}<option value="{{$c.Underlying}}">{{$c.Underlying}}</option>{{end}}
