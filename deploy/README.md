@@ -453,11 +453,26 @@ sudo rclone ls   "utho:$BUCKET"
 sudo rclone deletefile "utho:$BUCKET/probe.txt"
 ```
 
-**4. Point the job at it.** Set `KITE_BACKUP_RCLONE_REMOTE` in the unit file to your
-bucket plus a prefix — `utho:bucket-fgiekcqg/kite-algo`. The prefix is not required
-(pruning ignores anything not named `trading-YYYY-MM-DD.db.gz`) but it keeps the
-objects identifiable if the bucket is ever used for anything else. rclone creates
-the prefix implicitly on first upload. Then:
+**4. Point the job at it.** The unit already carries this deployment's bucket,
+`utho:bucket-fgiekcqg/kite-algo`. Utho generates bucket names and they cannot be
+renamed, so it is the real one rather than a placeholder; a bucket name is not a
+credential, and the key that reaches it is linked in the console and lives only in
+root's rclone.conf.
+
+The `/kite-algo` prefix is not required — pruning ignores anything not named
+`trading-YYYY-MM-DD.db.gz` — but it keeps the objects identifiable if the bucket is
+ever used for something else. rclone creates the prefix implicitly on first upload.
+
+For a different box or bucket, prefer a drop-in over editing the tracked file, so
+host-specific settings stay off the repo:
+
+```sh
+sudo systemctl edit kite-backup
+# [Service]
+# Environment=KITE_BACKUP_RCLONE_REMOTE=utho:other-bucket/kite-algo
+```
+
+Then:
 
 ```sh
 sudo systemctl daemon-reload

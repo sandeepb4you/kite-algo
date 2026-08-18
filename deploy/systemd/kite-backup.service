@@ -29,9 +29,14 @@ Environment=KITE_BACKUP_KEEP_MONTHLY_DAYS=365
 # Local copies protect against corruption and bad deletes. They do NOT survive
 # losing the disk or the VM, and what is lost then is every day of captured option
 # data, which Kite will not sell back at any price.
-# Utho bucket names are auto-generated — use the exact one from the console, and
-# note the rclone remote needs `no_check_bucket = true` (see deploy/README.md).
-Environment=KITE_BACKUP_RCLONE_REMOTE=utho:CHANGE-ME/kite-algo
+# The rclone remote name, bucket and prefix. Utho auto-generates bucket names and
+# they cannot be renamed, so this is the real one rather than a placeholder — a
+# bucket name is not a credential, and the key that reaches it is linked to it in
+# the Utho console and lives only in root's rclone.conf on the box.
+#
+# The remote also needs `no_check_bucket = true` in rclone.conf or every upload
+# fails on CreateBucket. See deploy/README.md.
+Environment=KITE_BACKUP_RCLONE_REMOTE=utho:bucket-fgiekcqg/kite-algo
 # e.g. --bwlimit 10M
 Environment=KITE_BACKUP_RCLONE_FLAGS=
 
