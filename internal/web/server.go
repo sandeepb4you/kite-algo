@@ -114,6 +114,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /api/live/disarm", page(s.handleLiveDisarm))
 	mux.Handle("POST /api/orders/{id}/cancel", page(s.handleCancelOrder))
 	mux.Handle("POST /api/positions/squareoff", page(s.handleSquareOff))
+	mux.Handle("POST /api/positions/squareoff-time", page(s.handleSquareOffTime))
 	mux.Handle("GET /api/instruments", page(s.handleInstrumentSearch))
 
 	// Live market-data channel. The upgrade is a GET so CSRF does not apply;

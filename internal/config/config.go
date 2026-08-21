@@ -336,6 +336,17 @@ type LiveRiskConfig struct {
 	// makes a position that looked small at noon very large by the close.
 	ExpirySquareOffTime string `yaml:"expiry_square_off_time"`
 
+	// SquareOffTime is the IST time ("15:20") at which the WHOLE real book is
+	// flattened, expiring or not. Distinct from ExpirySquareOffTime, which only
+	// touches contracts expiring today: this one is the "I am flat by the close,
+	// whatever I am holding" rule.
+	//
+	// Empty means off, and off is the default — inventing a time at which real
+	// positions disappear is not a default anyone should get by accident. This
+	// is only the STARTING value: the live desk can change it at runtime and the
+	// saved value wins. See app.SquareOffTimes.
+	SquareOffTime string `yaml:"square_off_time"`
+
 	// MaxOpenPositions, MaxOrderValue and MaxLotsPerTrade mirror the fields
 	// above and apply to the real book only. Unset inherits the top-level
 	// values.
@@ -350,6 +361,13 @@ type PaperRiskConfig struct {
 	MaxOpenPositions int     `yaml:"max_open_positions"`
 	MaxOrderValue    float64 `yaml:"max_order_value"`
 	MaxLotsPerTrade  int     `yaml:"max_lots_per_trade"`
+
+	// SquareOffTime is the IST time at which the simulated book is flattened.
+	// Separate from the real book's because the two answer different questions:
+	// being flat by the close is a rule about real capital, while a simulation
+	// is usually meant to run. Empty means off, and off is the default. The
+	// terminal can change it at runtime; the saved value wins.
+	SquareOffTime string `yaml:"square_off_time"`
 }
 
 // StrategyCfg is the declarative config for one strategy instance.

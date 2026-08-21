@@ -305,6 +305,43 @@ func (b *PaperBroker) RestorePositions(positions []Position) int {
 	return n
 }
 
+// DropStalePositions forgets position rows that belong to a previous trading
+// day, returning how many were removed.
+//
+// Two kinds go. A row that is already FLAT carried yesterday's realised P&L and
+// nothing else, so keeping it means today's positions tab opens with a list of
+// trades that closed yesterday — the operator scans a screen of rows looking for
+// what they are actually holding. An intraday (MIS) row goes whatever its
+// quantity, because the exchange closes those out at the end of their session:
+// showing one the next morning displays a position that exists nowhere and
+// offers a "square off" for something already gone.
+//
+// Open overnight products (NRML, CNC) are meant to survive the close and stay,
+// however old they are.
+//
+// This is the same rule app.restorablePaperPositions applies when seeding the
+// book from storage at startup, deliberately: without it the two paths
+// disagreed, and whether yesterday's trades were still on screen depended on
+// whether the process happened to restart overnight — which is exactly the sort
+// of difference nobody can reason about at 09:15.
+func (b *PaperBroker) DropStalePositions(dayStart time.Time) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	dropped := 0
+	for key, p := range b.positions {
+		if !p.Updated.Before(dayStart) {
+			continue // touched today; today's flat rows still carry today's P&L
+		}
+		if p.NetQuantity != 0 && p.Product != ProductMIS {
+			continue // a genuine overnight position
+		}
+		delete(b.positions, key)
+		dropped++
+	}
+	return dropped
+}
+
 // tryFill evaluates one pending order against `price`, filling it if conditions
 // are met. Safe to call repeatedly; it's a no-op once the order is filled.
 func (b *PaperBroker) tryFill(o *Order, price float64) {

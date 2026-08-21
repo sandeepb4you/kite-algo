@@ -15,6 +15,9 @@ type recordingBroker struct {
 	mode   string
 	placed []broker.OrderRequest
 	closed []string
+	// positions is what this broker reports holding, so a test can give the
+	// engine a real position to find.
+	positions []broker.Position
 }
 
 func (b *recordingBroker) PlaceOrder(_ context.Context, req broker.OrderRequest) (*broker.Order, error) {
@@ -34,7 +37,7 @@ func (b *recordingBroker) CancelOrder(_ context.Context, id string) error {
 }
 func (b *recordingBroker) GetOpenOrders(context.Context) ([]broker.Order, error) { return nil, nil }
 func (b *recordingBroker) GetPositions(context.Context) ([]broker.Position, error) {
-	return nil, nil
+	return b.positions, nil
 }
 func (b *recordingBroker) Mode() string { return b.mode }
 
@@ -391,5 +394,106 @@ func TestSquaringOffARealPositionFailsWithoutALiveBroker(t *testing.T) {
 	}
 	if pos, _ := paper.GetPositions(ctx); len(pos) != 0 {
 		t.Errorf("a phantom paper position was opened instead of failing: %+v", pos)
+	}
+}
+
+// Standing down must not trap the operator in a real position.
+//
+// A disarm used to remove the live broker outright, which took away the only
+// route to the exchange: the real book vanished from every screen (the engine
+// polls it only while the broker is installed) and every attempt to close a
+// position failed with ErrNoLiveBroker. The way out was to arm live again —
+// phrase, password and all — purely in order to get flat. So a disarm now keeps
+// the broker and closes it to entries instead.
+func TestDisarmKeepsTheRealBookClosableButRefusesEntries(t *testing.T) {
+	ctx := context.Background()
+	eng, _, live := routingEngine(t)
+	live.positions = []broker.Position{{
+		StrategyID: ManualStrategyID, Exchange: "NFO",
+		TradingSymbol: "NIFTY24350CE", Product: broker.ProductMIS,
+		NetQuantity: -65, AveragePrice: 100,
+	}}
+	eng.SetLiveBroker(live)
+	eng.RefreshPositions(ctx)
+
+	eng.DisarmLiveEntries()
+
+	// Entries are closed, in every way the rest of the system can ask.
+	if eng.LiveManualActive() {
+		t.Error("live manual still reported active after a disarm")
+	}
+	if got := eng.RouteMode(); got != RouteRealExitOnly {
+		t.Errorf("RouteMode() = %q, want %q", got, RouteRealExitOnly)
+	}
+	if got := eng.bookFor(wantReal(ManualStrategyID, "NIFTY24350CE")); got != broker.BookPaper {
+		t.Errorf("a new manual order routed to %q after a disarm, want paper", got)
+	}
+	// And refused outright when the book arrives already chosen, which is the
+	// path bookFor cannot cover.
+	if _, err := eng.placeOrderIn(ctx, wantReal(ManualStrategyID, "NIFTY24350CE"), broker.BookReal); !errors.Is(err, ErrLiveNotArmed) {
+		t.Errorf("a real entry placed straight into the real book returned %v, want ErrLiveNotArmed", err)
+	}
+	if len(live.placed) != 0 {
+		t.Fatalf("the live broker took %d order(s) while disarmed", len(live.placed))
+	}
+
+	// Exits are open. The position is still visible...
+	if !eng.RealExitOnly() {
+		t.Error("RealExitOnly() = false while holding a real position after a disarm")
+	}
+	real := 0
+	for _, p := range eng.Positions() {
+		if p.Book.IsReal() {
+			real++
+		}
+	}
+	if real != 1 {
+		t.Fatalf("engine sees %d real positions after a disarm, want 1 — "+
+			"a position the desk cannot show is one the operator cannot close", real)
+	}
+
+	// ...and still closable, at the live broker rather than quietly on paper.
+	o, err := eng.SquareOff(ctx, ManualStrategyID, "NIFTY24350CE")
+	if err != nil {
+		t.Fatalf("square off after a disarm: %v", err)
+	}
+	if len(live.placed) != 1 {
+		t.Fatalf("live broker got %d closing orders, want 1", len(live.placed))
+	}
+	if got := live.placed[0].Intent; got != broker.IntentClose {
+		t.Errorf("closing order intent = %q, want %q", got, broker.IntentClose)
+	}
+	if o.Mode != "live" {
+		t.Errorf("the close was routed to the %q broker, want live — closing a real "+
+			"position on paper leaves the exposure open and reports success", o.Mode)
+	}
+}
+
+// Removing the broker entirely is still available, and is not exit-only.
+func TestRemovingTheLiveBrokerIsNotExitOnly(t *testing.T) {
+	eng, _, live := routingEngine(t)
+	eng.SetLiveBroker(live)
+	eng.SetLiveBroker(nil)
+
+	if eng.RealExitOnly() {
+		t.Error("RealExitOnly() = true with no live broker installed")
+	}
+	if got := eng.RouteMode(); got != RouteAllPaper {
+		t.Errorf("RouteMode() = %q, want %q", got, RouteAllPaper)
+	}
+}
+
+// Arming again after a disarm must restore entries.
+func TestReArmingAfterDisarmRestoresEntries(t *testing.T) {
+	eng, _, live := routingEngine(t)
+	eng.SetLiveBroker(live)
+	eng.DisarmLiveEntries()
+	eng.SetLiveBroker(live)
+
+	if !eng.LiveManualActive() {
+		t.Error("live manual not active after re-arming")
+	}
+	if got := eng.bookFor(wantReal(ManualStrategyID, "X")); got != broker.BookReal {
+		t.Errorf("bookFor = %q after re-arming, want real", got)
 	}
 }

@@ -138,6 +138,16 @@ risk:
     # Simulated positions are never touched: they are the point of a
     # simulation and are left to run.
     expiry_square_off_time: "15:00"
+
+    # IST time at which the WHOLE real book is flattened, expiring or not.
+    #
+    # This is only the STARTING value. The live desk sets it at runtime and the
+    # saved value wins — which is the point, since "flat by 15:20" is a decision
+    # that changes with the day, not something to redeploy for.
+    #
+    # Empty (the default) means off. Inventing a time at which real positions
+    # disappear is not a default anyone should get by accident.
+    square_off_time: ""
   # Limits for the SIMULATED book, which runs alongside the real one: manual
   # orders can be routed to the exchange while every strategy stays on paper.
   #
@@ -150,6 +160,16 @@ risk:
     # max_lots_per_trade is intentionally unset. An override only applies when
     # it is > 0, so any value here would put the cap back on the simulated book
     # — which in paper mode is where every order goes.
+
+    # IST time at which the SIMULATED book is flattened. Separate from the real
+    # book's above, because the two are different decisions: being flat by the
+    # close is a rule about real capital, while a simulation is usually meant to
+    # keep running so a strategy is measured on what it actually did.
+    #
+    # Set from the terminal at runtime; empty (the default) means off. Note that
+    # this closes STRATEGY positions too, and a running strategy may re-enter
+    # afterwards.
+    square_off_time: ""
 
 # Strategy instances. Set enabled: true to activate.
 strategies:

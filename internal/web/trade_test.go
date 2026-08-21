@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"kite-algo/internal/app"
+	"kite-algo/internal/broker"
 	"kite-algo/internal/engine"
 )
 
@@ -400,4 +402,139 @@ func TestRefusedArmingKeepsItsErrorOnScreen(t *testing.T) {
 	if !strings.Contains(strings.ToLower(body), "live") {
 		t.Errorf("refusal did not explain itself: %s", body)
 	}
+}
+
+// The polled positions fragment must stay on the desk's own book.
+//
+// /partials/positions is shared with the dashboard, which shows BOTH books, and
+// the desks used to poll it with no parameters at all. So the terminal rendered
+// correctly and then — five seconds later, on the first refresh — quietly gained
+// the real book, square-off button included. The leak ran both ways: the live
+// desk gained the simulated one.
+func TestPositionsFragmentHonoursTheRequestedBook(t *testing.T) {
+	ts, a := newTestServer(t)
+	client := loginClient(t, ts)
+
+	seedTwoBookPositions(t, a)
+
+	get := func(path string) string {
+		resp, err := client.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		return readAll(t, resp)
+	}
+
+	paper := get("/partials/positions?book=paper")
+	if strings.Contains(paper, "REALSYM") {
+		t.Error("the paper fragment carries a real position")
+	}
+	if !strings.Contains(paper, "PAPERSYM") {
+		t.Error("the paper fragment is missing its own positions")
+	}
+
+	real := get("/partials/positions?book=real")
+	if strings.Contains(real, "PAPERSYM") {
+		t.Error("the real fragment carries a simulated position")
+	}
+
+	// The dashboard passes no book and must still see everything.
+	both := get("/partials/positions")
+	if !strings.Contains(both, "PAPERSYM") {
+		t.Error("the dashboard fragment lost the paper book")
+	}
+}
+
+// Each desk's data is filtered to its own book before it ever reaches a
+// template.
+//
+// /trade cannot be fetched here — it redirects without a Zerodha session — so
+// this covers the filter directly; the template's own gate is covered in
+// render_test.go.
+func TestOnlyBookSplitsThePositionList(t *testing.T) {
+	in := []broker.Position{
+		{TradingSymbol: "REALSYM", NetQuantity: -65, Book: broker.BookReal},
+		{TradingSymbol: "PAPERSYM", NetQuantity: -65, Book: broker.BookPaper},
+		// An unset book is paper: the zero value must never be real, or a
+		// position nobody labelled would show up on the real desk.
+		{TradingSymbol: "UNLABELLED", NetQuantity: -65},
+	}
+
+	paper := onlyBook(in, broker.BookPaper)
+	if len(paper) != 2 {
+		t.Fatalf("paper book has %d positions, want 2 (including the unlabelled one)", len(paper))
+	}
+	for _, p := range paper {
+		if p.TradingSymbol == "REALSYM" {
+			t.Error("a real position survived the paper filter")
+		}
+	}
+
+	real := onlyBook(in, broker.BookReal)
+	if len(real) != 1 || real[0].TradingSymbol != "REALSYM" {
+		t.Errorf("real book = %+v, want only REALSYM", real)
+	}
+}
+
+// Setting the auto square-off time from a desk.
+func TestSquareOffTimeEndpoint(t *testing.T) {
+	ts, a := newTestServer(t)
+	client := loginClient(t, ts)
+	token := csrfFor(t, ts, client)
+
+	post := func(book, at string) string {
+		resp, err := client.PostForm(ts.URL+"/api/positions/squareoff-time", url.Values{
+			"_csrf": {token}, "book": {book}, "time": {at},
+		})
+		if err != nil {
+			t.Fatalf("post square-off time: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d", resp.StatusCode)
+		}
+		return readAll(t, resp)
+	}
+
+	if body := post("paper", "15:25"); !strings.Contains(body, "15:25") {
+		t.Errorf("the response does not confirm the time it set: %s", body)
+	}
+	if got := a.SquareOffTimes().Paper; got != "15:25" {
+		t.Errorf("paper square-off time = %q, want 15:25", got)
+	}
+
+	// A bad time changes nothing and says why.
+	body := post("paper", "half three")
+	if !strings.Contains(body, "24-hour") {
+		t.Errorf("a malformed time was not explained: %s", body)
+	}
+	if got := a.SquareOffTimes().Paper; got != "15:25" {
+		t.Errorf("a rejected time changed the setting to %q", got)
+	}
+
+	// Clearing it is possible, which matters more than setting it: an operator
+	// who wants the automatic flatten to stop must be able to say so.
+	post("paper", "")
+	if got := a.SquareOffTimes().Paper; got != "" {
+		t.Errorf("clearing the time left %q behind", got)
+	}
+
+	// Each desk sets its own book only.
+	post("real", "15:20")
+	if got := a.SquareOffTimes(); got.Real != "15:20" || got.Paper != "" {
+		t.Errorf("times = %+v, want only the real book set", got)
+	}
+}
+
+// seedTwoBookPositions puts one real and one simulated position in the engine's
+// cache, which is what the desks render from.
+func seedTwoBookPositions(t *testing.T, a *app.App) {
+	t.Helper()
+	a.Engine.SetPositionsForTest([]broker.Position{
+		{StrategyID: "manual", TradingSymbol: "REALSYM", Product: broker.ProductMIS,
+			NetQuantity: -65, AveragePrice: 100, Book: broker.BookReal},
+		{StrategyID: "manual", TradingSymbol: "PAPERSYM", Product: broker.ProductMIS,
+			NetQuantity: -65, AveragePrice: 100, Book: broker.BookPaper},
+	})
 }

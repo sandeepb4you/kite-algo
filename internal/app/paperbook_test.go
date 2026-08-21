@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -126,5 +127,72 @@ func TestRestorePositionsSeedsTheBroker(t *testing.T) {
 	got, _ = pb.GetPositions(nil)
 	if got[0].NetQuantity != -65 {
 		t.Errorf("live position clobbered: qty = %d", got[0].NetQuantity)
+	}
+}
+
+// Yesterday's intraday paper positions must not be on screen this morning.
+//
+// The server normally runs for days, so restorePaperBook — which applies this
+// rule at startup — never got a chance to. The paper broker holds its book in
+// memory and every position it had ever seen was still in that map the next
+// morning, so the positions tab opened with yesterday's finished business listed
+// above today's. (The flat-row half of the rule is covered in the broker's own
+// tests, where a closed row can be planted directly.)
+func TestPaperBookRolloverDropsYesterdaysIntradayPositions(t *testing.T) {
+	a := newTestApp(t)
+
+	yesterday := time.Date(2026, 8, 17, 15, 0, 0, 0, history.IST)
+	today := time.Date(2026, 8, 18, 10, 0, 0, 0, history.IST)
+
+	a.paper.RestorePositions([]broker.Position{
+		// Still open overnight, and an overnight product: stays.
+		storedPos("NIFTY2690124350CE", -65, broker.ProductNRML, broker.BookPaper, yesterday),
+		// Intraday from yesterday: the exchange closed it, so it must go — showing
+		// it offers a square-off for something that no longer exists anywhere.
+		storedPos("NIFTY2681824350PE", -65, broker.ProductMIS, broker.BookPaper, yesterday),
+		// Opened today: stays, obviously.
+		storedPos("NIFTY2682524400CE", -65, broker.ProductMIS, broker.BookPaper, today),
+	})
+
+	a.pruneStalePaperPositions(today)
+
+	got := map[string]bool{}
+	positions, err := a.paper.GetPositions(context.Background())
+	if err != nil {
+		t.Fatalf("read positions: %v", err)
+	}
+	for _, p := range positions {
+		got[p.TradingSymbol] = true
+	}
+
+	if got["NIFTY2681824350PE"] {
+		t.Error("yesterday's intraday position is still in the book; the exchange " +
+			"closed it, so squaring it off would close something that does not exist")
+	}
+	if !got["NIFTY2690124350CE"] {
+		t.Error("an open overnight position was dropped — NRML is meant to survive the close")
+	}
+	if !got["NIFTY2682524400CE"] {
+		t.Error("a position opened today was dropped")
+	}
+}
+
+// Running every minute must be harmless.
+func TestPaperBookRolloverIsIdempotent(t *testing.T) {
+	a := newTestApp(t)
+	today := time.Date(2026, 8, 18, 10, 0, 0, 0, history.IST)
+
+	a.paper.RestorePositions([]broker.Position{
+		storedPos("NIFTY2690124350CE", -65, broker.ProductNRML, broker.BookPaper,
+			today.AddDate(0, 0, -3)),
+	})
+
+	for i := 0; i < 5; i++ {
+		a.pruneStalePaperPositions(today)
+	}
+
+	positions, _ := a.paper.GetPositions(context.Background())
+	if len(positions) != 1 {
+		t.Errorf("repeated rollovers dropped an open overnight position (%d left)", len(positions))
 	}
 }

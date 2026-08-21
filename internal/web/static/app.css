@@ -835,3 +835,45 @@ details summary { cursor: pointer; }
   font-size: 11px;
   opacity: 0.9;
 }
+
+/* --- auto square-off ------------------------------------------------------
+   The timed flatten, beneath the square-off buttons on each desk. Laid out on
+   one line — label, time, Save — because it is a setting, not an action, and
+   should not compete with the buttons above it for attention. */
+.squareoff-time {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.squareoff-time label {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+/* Narrow: it holds five characters. A full-width box would read as the page's
+   primary input, which it is not. */
+.squareoff-time input[type="time"] {
+  width: 7.5em;
+  margin: 0;
+}
+.squareoff-state {
+  margin-top: 4px;
+}
+
+/* The unarmed live desk's exit-only panel. Bordered like a real-money block,
+   because that is what it holds — but without the LIVE banner, since nothing
+   here can open a position. */
+.exit-only {
+  border-left: 3px solid var(--live);
+}
+.exit-only .book-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}

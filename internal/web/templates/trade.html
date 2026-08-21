@@ -208,27 +208,44 @@
     </div>
 
     <div id="panel-positions" class="tab-panel panel-positions">
+      {{/* ONE book per desk. The live desk shows the real book, the terminal the
+           simulated one, and neither shows the other's.
+
+           The terminal used to render both, which put a real position and a
+           "Square off REAL" button on the simulated desk. The whole safety
+           argument for splitting the desks is that the page you are on tells you
+           whose money is at stake; a page showing both books tells you nothing.
+
+           Gated here as well as filtered in the handler, deliberately. This
+           markup is also reachable with a hand-built tradeData (a test, a future
+           caller), and the desk's identity should not depend on someone else
+           having remembered to filter first. */}}
       <div data-poll="{{.Data.PositionsPollURL}}" data-poll-ms="5000">
-        {{template "positions_book" (realpos .Data.Positions .CSRF)}}
-        {{/* The live desk shows the real book only; the terminal shows both. */}}
-        {{if not .Data.Live}}{{template "positions_book" (paperpos .Data.Positions .CSRF)}}{{end}}
+        {{if .Data.Live}}
+          {{template "positions_book" (realpos .Data.Positions .CSRF)}}
+        {{else}}
+          {{template "positions_book" (paperpos .Data.Positions .CSRF)}}
+        {{end}}
+        {{if not .Data.Positions}}<p class="muted small">No open positions.</p>{{end}}
       </div>
-      {{/* One button per book, outside the polled div — a refresh would
-           otherwise wipe them.
+      {{/* One button, for THIS desk's book, outside the polled div — a refresh
+           would otherwise wipe it.
 
-           Split because the two are different actions with different stakes.
-           Flattening the simulated book costs nothing and is one click;
-           flattening the real one spends money and keeps its prompt. A single
-           control doing both forced the careful treatment onto the harmless
-           case, which is exactly how an operator learns to click through the
-           prompt that matters.
+           The two are different actions with different stakes, so they keep
+           different treatments: flattening the simulated book costs nothing and
+           is one click, flattening the real one spends money and confirms. A
+           single control doing both forced the careful treatment onto the
+           harmless case, which is exactly how an operator learns to click
+           through the prompt that matters — and putting BOTH on one page did the
+           same thing by making the real button ordinary furniture on a screen
+           where nothing else is real.
 
-           Each appears only when that book has something to close, so the real
-           button is simply absent on a day with no real positions. */}}
+           Absent when this desk's book has nothing open, rather than a button
+           that reports "already flat" after a click. */}}
       {{$real := realpos .Data.Positions .CSRF}}
       {{$paper := paperpos .Data.Positions .CSRF}}
 
-      {{if $real.Positions}}
+      {{if and .Data.Live $real.Positions}}
       <form method="post" action="/api/positions/squareoff"
             data-confirm="Square off every REAL position at market — this closes real money positions. Continue?"
             data-result="#order-result" class="inline">
@@ -240,7 +257,7 @@
       </form>
       {{end}}
 
-      {{if $paper.Positions}}
+      {{if and (not .Data.Live) $paper.Positions}}
       <form method="post" action="/api/positions/squareoff"
             data-result="#order-result" class="inline">
         <input type="hidden" name="_csrf" value="{{.CSRF}}">
@@ -250,6 +267,8 @@
         </button>
       </form>
       {{end}}
+
+      {{template "squareoff_time" .}}
     </div>
 
     <div id="panel-orders" class="tab-panel panel-orders">
@@ -264,4 +283,50 @@
      working with, and the index spot sits in the chain header. The watchlist
      lives on /market for anyone who wants it. */}}
 
+{{end}}
+
+
+{{/* The timed flatten for THIS desk's book.
+
+     Sitting in front of the screen at 15:20 to click "square off" is a job for a
+     clock, and forgetting is expensive in exactly one direction. Each desk sets
+     its own time because the two books are different decisions: being flat by
+     the close is a rule about real capital, while a simulated position is
+     usually meant to keep running.
+
+     Outside the polled region, like the square-off buttons beside it — a
+     five-second refresh landing while the operator is typing a time would wipe
+     what they typed. The state line beneath is therefore only as fresh as the
+     last full page load, which is why it names a clock time (a fact that does
+     not go stale) and reserves the countdown for colour. */}}
+{{define "squareoff_time"}}
+{{$so := .Data.AutoSquareOff}}
+<form method="post" action="/api/positions/squareoff-time"
+      data-result="#order-result" class="squareoff-time">
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  {{/* The book comes from the desk, not from anything the operator can set. */}}
+  <input type="hidden" name="book" value="{{.Data.Book}}">
+  <label for="squareoff-at">Auto square-off</label>
+  <input id="squareoff-at" name="time" type="time" value="{{$so.Time}}">
+  <button class="btn btn-sm" type="submit">Save</button>
+</form>
+<p class="muted small squareoff-state">
+  {{if not $so.Enabled}}
+    Off — nothing is flattened on a timer.
+    {{if .Data.Live}}Real positions stay open until you close them.{{end}}
+  {{else if $so.Done}}
+    Ran today. Next: {{$so.Time}} IST tomorrow.
+  {{else}}
+    {{if .Data.Live}}The REAL book{{else}}The simulated book{{end}}
+    is flattened at <b>{{$so.Time}} IST</b>{{if $so.Label}} — in {{$so.Label}}{{end}}.
+    {{if $so.Positions}}{{$so.Positions}} position(s) open now.{{end}}
+    {{if not .Data.Live}}
+      {{/* Said plainly, because it surprises people: the simulated book is
+           mostly strategy positions, and a strategy that is still running will
+           happily open another one a minute later. */}}
+      <br>Includes strategy positions — a running strategy may re-enter after it.
+    {{end}}
+  {{end}}
+  Blank the field, or type <code>off</code>, to disable.
+</p>
 {{end}}

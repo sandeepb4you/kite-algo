@@ -1,6 +1,14 @@
 {{/* Real and simulated positions are rendered as SEPARATE sections, real
      first, each with its own P&L total.
 
+     Whichever sections appear is decided by the CALLER, via ?book= on the
+     fragment URL: the dashboard and /market pass nothing and get both, while
+     each desk names its own book and gets only that one. This template renders
+     whatever list it is handed, so a paper-only list simply produces the paper
+     block. (The desks passing nothing was the bug: they were served the
+     dashboard's blended view, so the terminal gained the real book — square-off
+     button included — on its first background refresh.)
+
      Manual orders can route to the exchange while strategies stay simulated, so
      both kinds exist at once. A single blended list with a per-row badge was the
      alternative and was rejected: a badge is easy to skip while scanning, and

@@ -106,6 +106,16 @@ type Engine struct {
 	// liveBroker routes MANUAL orders to the exchange while strategies stay on
 	// the paper broker. Nil until an operator explicitly confirms live routing.
 	liveBroker broker.Broker
+	// liveArmed reports whether the live broker may take NEW real orders.
+	//
+	// Split from liveBroker being non-nil because disarming and disconnecting
+	// are different things. Standing down must stop new real risk, but it must
+	// NOT strand the operator: closing a real position needs the live broker,
+	// and dropping it on disarm meant every exit failed with ErrNoLiveBroker
+	// until live was armed again — arming, with its phrase and password, purely
+	// to get flat. So a disarm clears this flag and keeps the broker, leaving
+	// the real book reachable for exits and closed to entries.
+	liveArmed bool
 	// liveGate is consulted before every real-money entry; see SetLiveGate.
 	liveGate func() (bool, string)
 	// orderBooks remembers which broker each order went to, so a cancel reaches
@@ -617,6 +627,28 @@ func (e *Engine) placeOrderInternal(ctx context.Context, req broker.OrderRequest
 func (e *Engine) placeOrderIn(
 	ctx context.Context, req broker.OrderRequest, book broker.Book,
 ) (*broker.Order, error) {
+	// A real order that is not closing something requires live routing to be
+	// ARMED, not merely reachable. A disarm keeps the live broker installed so
+	// exits still work, which means brokerForBook below would happily route a
+	// new real entry; this is the check that stops it. Two independent barriers
+	// guard entries — bookFor never selects the real book while disarmed, and
+	// this refuses one that arrives with the book already chosen.
+	if book.IsReal() && req.Intent != broker.IntentClose && !e.liveEntriesArmed() {
+		if e.logger != nil {
+			e.logger.Warn("refused a real order while live routing is disarmed",
+				"symbol", req.TradingSymbol, "side", req.Side, "strategy", req.StrategyID)
+		}
+		e.pub.Publish(events.Event{
+			Kind:       events.KindOrderRejected,
+			Symbol:     req.TradingSymbol,
+			StrategyID: req.StrategyID,
+			Level:      events.LevelWarn,
+			Message:    ErrLiveNotArmed.Error(),
+			Fields:     map[string]any{"rule": "live-not-armed", "book": string(book)},
+		})
+		return nil, ErrLiveNotArmed
+	}
+
 	lotSize := e.LotSize(req.TradingSymbol)
 	openPositions := e.snapshotBookPositionCount(book)
 	dayPnL := e.snapshotBookPnL(book)
@@ -1013,6 +1045,21 @@ func (e *Engine) handleTick(tick marketdata.Tick) {
 // known price series and assert that paper trading and backtesting execute
 // identically. Nothing in the running platform should call it.
 func (e *Engine) HandleTickForTest(tick marketdata.Tick) { e.handleTick(tick) }
+
+// SetPositionsForTest replaces the cached position snapshot.
+//
+// Exported for the same narrow reason as HandleTickForTest. A test that renders a
+// desk needs a cache holding BOTH books at once, and the honest route to a real
+// position — install a live broker, arm it, place an order, let the sync loop
+// reconcile — is a great deal of machinery for a page that only reads the
+// snapshot. Nothing in the running platform should call it: the real cache is
+// owned by refreshPositions, which builds it from the brokers.
+func (e *Engine) SetPositionsForTest(positions []broker.Position) {
+	e.mu.Lock()
+	e.rawPositions = positions
+	e.positions = positions
+	e.mu.Unlock()
+}
 
 // deliverTick calls one strategy's OnTick, containing any panic.
 //

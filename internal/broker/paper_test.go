@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // TestPaperMarketFill checks that a market order fills at the current price and
@@ -103,5 +104,64 @@ func TestPaperCancel(t *testing.T) {
 	open, _ := b.GetOpenOrders(context.Background())
 	if len(open) != 0 {
 		t.Errorf("expected no open orders after cancel, got %d", len(open))
+	}
+}
+
+// A trade that closed yesterday must not be in today's book.
+//
+// GetPositions deliberately returns flat rows — they carry the day's realised
+// P&L — so the ones that have to go are the flat rows belonging to a PREVIOUS
+// day. The operator was opening the positions tab each morning to a list of
+// finished business and scanning it for what they were actually holding.
+func TestDropStalePositions(t *testing.T) {
+	ctx := context.Background()
+	b := NewPaperBroker(nil, nil)
+
+	yesterday := time.Date(2026, 8, 17, 15, 0, 0, 0, time.UTC)
+	dayStart := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)
+
+	plant := func(sym string, qty int, product ProductType, updated time.Time) {
+		b.mu.Lock()
+		b.positions[positionKey{"manual", sym, product}] = &Position{
+			StrategyID: "manual", TradingSymbol: sym, Product: product,
+			NetQuantity: qty, AveragePrice: 100, Book: BookPaper, Updated: updated,
+		}
+		b.mu.Unlock()
+	}
+
+	plant("CLOSED-YESTERDAY", 0, ProductNRML, yesterday)
+	plant("MIS-YESTERDAY", -65, ProductMIS, yesterday)
+	plant("NRML-YESTERDAY", -65, ProductNRML, yesterday)
+	plant("CLOSED-TODAY", 0, ProductMIS, today)
+	plant("OPEN-TODAY", -65, ProductMIS, today)
+
+	if got := b.DropStalePositions(dayStart); got != 2 {
+		t.Errorf("dropped %d, want 2 (yesterday's closed row and yesterday's intraday)", got)
+	}
+
+	left := map[string]bool{}
+	positions, err := b.GetPositions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range positions {
+		left[p.TradingSymbol] = true
+	}
+
+	for _, gone := range []string{"CLOSED-YESTERDAY", "MIS-YESTERDAY"} {
+		if left[gone] {
+			t.Errorf("%s survived the rollover", gone)
+		}
+	}
+	for _, kept := range []string{"NRML-YESTERDAY", "CLOSED-TODAY", "OPEN-TODAY"} {
+		if !left[kept] {
+			t.Errorf("%s was dropped", kept)
+		}
+	}
+
+	// Idempotent: the rollover runs every minute.
+	if got := b.DropStalePositions(dayStart); got != 0 {
+		t.Errorf("a second pass dropped %d more, want 0", got)
 	}
 }

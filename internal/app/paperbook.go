@@ -46,6 +46,57 @@ func (a *App) restorePaperBook(ctx context.Context) {
 	}
 }
 
+// startPaperBookRollover drops yesterday's paper rows once the IST date turns.
+//
+// restorePaperBook applies the same rule, but only at startup, so it fixed the
+// problem only for a process that happened to restart overnight. The server
+// normally does not: it runs for days, the paper broker holds its book in
+// memory, and every position it has ever seen is still in that map the next
+// morning. So the positions tab opened with yesterday's closed trades listed
+// above today's, and the operator scanned a screen of finished business looking
+// for what they were actually holding.
+//
+// A minute ticker rather than a timer set for midnight, for the same reason the
+// capture scheduler uses one: a machine that was suspended over the rollover, or
+// whose clock was corrected, converges within a minute instead of waiting for a
+// deadline that has already passed.
+func (a *App) startPaperBookRollover(ctx context.Context) {
+	if a.paper == nil {
+		return
+	}
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-t.C:
+				a.pruneStalePaperPositions(now)
+			}
+		}
+	}()
+}
+
+// pruneStalePaperPositions forgets simulated rows left over from a previous day.
+//
+// Idempotent, so running it every minute is harmless: after the first pass there
+// is nothing older than the current IST day left to drop. Today's flat rows are
+// deliberately kept — they carry today's realised P&L, which the day's figures
+// are built from.
+func (a *App) pruneStalePaperPositions(now time.Time) {
+	if a.paper == nil {
+		return
+	}
+	local := now.In(history.IST)
+	dayStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, history.IST)
+
+	if n := a.paper.DropStalePositions(dayStart); n > 0 && a.Log != nil {
+		a.Log.Info("paper book rolled over; dropped positions from previous days",
+			"dropped", n, "day", local.Format("2006-01-02"))
+	}
+}
+
 // restorablePaperPositions selects which stored positions to seed.
 //
 // Intraday (MIS) positions from a previous day are dropped. The exchange closes

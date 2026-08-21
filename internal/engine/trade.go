@@ -28,6 +28,17 @@ var ErrNoPosition = errors.New("no open position in that symbol")
 var ErrNoLiveBroker = errors.New(
 	"no live broker: the real position cannot be squared off until the Zerodha session is active")
 
+// ErrLiveNotArmed is returned when a NEW real order is attempted while live
+// routing is disarmed.
+//
+// It exists because a disarm no longer removes the live broker — it is kept so
+// open real positions can still be closed. That leaves the real book reachable,
+// so the ban on opening new real risk has to be stated somewhere rather than
+// falling out of there being no broker to reach. Closing orders (IntentClose)
+// are exempt: refusing those is the trap the change exists to remove.
+var ErrLiveNotArmed = errors.New(
+	"live routing is not armed: only closing orders may reach the real book")
+
 // PlaceManualOrder submits an operator's order from the web UI.
 //
 // It deliberately routes through PlaceOrder rather than the broker directly, so
@@ -193,6 +204,33 @@ func (e *Engine) flatten(ctx context.Context, p broker.Position) (*broker.Order,
 // OpenOrders returns the currently pending orders from the active broker.
 func (e *Engine) OpenOrders(ctx context.Context) ([]broker.Order, error) {
 	br := e.currentBroker()
+	if br == nil {
+		return nil, nil
+	}
+	return br.GetOpenOrders(ctx)
+}
+
+// OpenOrdersFor returns the pending orders held in ONE book.
+//
+// The desks need this because open orders live in whichever broker accepted
+// them, and OpenOrders only ever asks the active (simulated) one. On the live
+// desk that was wrong twice over: it listed simulated orders on the page whose
+// whole purpose is real money, and — worse — a REAL working order sitting at the
+// exchange did not appear on the desk that placed it. An order you cannot see is
+// an order you cannot cancel.
+//
+// A missing live broker returns no orders rather than an error: the real book
+// simply has none to show, and an error banner on a polled panel would be noise
+// on every refresh.
+func (e *Engine) OpenOrdersFor(ctx context.Context, book broker.Book) ([]broker.Order, error) {
+	if book.IsReal() {
+		live := e.liveBrokerOrNil()
+		if live == nil {
+			return nil, nil
+		}
+		return live.GetOpenOrders(ctx)
+	}
+	br := e.paperBrokerOrCurrent()
 	if br == nil {
 		return nil, nil
 	}

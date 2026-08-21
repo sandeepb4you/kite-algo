@@ -38,6 +38,10 @@ type routeMode string
 const (
 	// RouteAllPaper simulates everything. The default.
 	RouteAllPaper routeMode = "all-paper"
+	// RouteRealExitOnly means the real book is reachable for CLOSING orders
+	// only: live routing was armed and has since been stood down, and the
+	// broker is kept so open real positions can still be squared off.
+	RouteRealExitOnly routeMode = "real-exit-only"
 	// RouteManualLive sends hand-typed orders to the exchange and keeps every
 	// strategy simulated.
 	//
@@ -79,10 +83,15 @@ func (o *orderBooks) get(orderID string) (broker.Book, bool) {
 }
 
 // SetLiveBroker installs (or removes, with nil) the real-money broker used for
-// manual orders. Strategies are unaffected: they always use the paper broker.
+// manual orders, and arms or disarms real entries with it. Strategies are
+// unaffected: they always use the paper broker.
+//
+// To stand down without losing the ability to CLOSE a real position, use
+// DisarmLiveEntries instead.
 func (e *Engine) SetLiveBroker(b broker.Broker) {
 	e.cmu.Lock()
 	e.liveBroker = b
+	e.liveArmed = b != nil
 	e.cmu.Unlock()
 
 	if e.logger != nil {
@@ -102,20 +111,74 @@ func (e *Engine) liveBrokerOrNil() broker.Broker {
 	return e.liveBroker
 }
 
+// DisarmLiveEntries closes the real book to NEW orders while keeping it
+// reachable for exits.
+//
+// Deliberately not SetLiveBroker(nil). Dropping the broker also drops the only
+// route to the exchange, so every attempt to close a real position failed with
+// ErrNoLiveBroker and the real book vanished from the desk entirely — the
+// engine polls it only while the broker is installed. An operator who had stood
+// down was then holding real exposure the UI could neither show nor close, and
+// the way out was to arm live again, phrase and password, just to get flat.
+// De-escalating must never require escalating first.
+//
+// Entries are blocked in two independent places once this is called: bookFor
+// sends new manual orders to the paper book, and placeOrderIn refuses a real
+// order that is not IntentClose outright.
+func (e *Engine) DisarmLiveEntries() {
+	e.cmu.Lock()
+	e.liveArmed = false
+	installed := e.liveBroker != nil
+	e.cmu.Unlock()
+
+	if e.logger != nil && installed {
+		e.logger.Warn("live entries disarmed; the real book stays reachable for " +
+			"CLOSING orders only — new manual orders are simulated again")
+	}
+}
+
+// liveEntriesArmed reports whether a NEW real order may be routed.
+func (e *Engine) liveEntriesArmed() bool {
+	e.cmu.RLock()
+	defer e.cmu.RUnlock()
+	return e.liveArmed && e.liveBroker != nil
+}
+
+// RealExitOnly reports that the real book can be closed but not opened: the
+// live broker is still installed, and entries are disarmed.
+//
+// The UI needs this to tell two states apart that look identical from
+// LiveActive alone — "never armed today, there is nothing real to manage" and
+// "stood down holding real positions, which you can still close here".
+func (e *Engine) RealExitOnly() bool {
+	e.cmu.RLock()
+	defer e.cmu.RUnlock()
+	return !e.liveArmed && e.liveBroker != nil
+}
+
 // RouteMode reports how orders are currently routed.
 func (e *Engine) RouteMode() routeMode {
-	if e.liveBrokerOrNil() == nil {
+	switch {
+	case e.liveEntriesArmed():
+		return RouteManualLive
+	case e.RealExitOnly():
+		return RouteRealExitOnly
+	default:
 		return RouteAllPaper
 	}
-	return RouteManualLive
 }
 
 // LiveManualActive reports whether hand-typed orders reach the exchange.
-func (e *Engine) LiveManualActive() bool { return e.liveBrokerOrNil() != nil }
+func (e *Engine) LiveManualActive() bool { return e.liveEntriesArmed() }
 
 // bookFor reports which book an order request will be routed to.
+//
+// Keys off liveEntriesArmed, not merely on a live broker being installed: after
+// a disarm the broker is deliberately kept for exits, and inferring "armed"
+// from its presence would have quietly re-opened the real book to new manual
+// orders the moment standing down stopped dropping it.
 func (e *Engine) bookFor(req broker.OrderRequest) broker.Book {
-	if e.liveBrokerOrNil() == nil {
+	if !e.liveEntriesArmed() {
 		return broker.BookPaper
 	}
 	if req.StrategyID == ManualStrategyID && req.Book.IsReal() {

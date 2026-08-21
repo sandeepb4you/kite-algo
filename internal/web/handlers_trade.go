@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"kite-algo/internal/app"
 	"kite-algo/internal/broker"
 	"kite-algo/internal/engine"
 	"kite-algo/internal/risk"
@@ -44,6 +45,12 @@ type tradeData struct {
 	// server-rendered page already shows one and a LIMIT order selected before
 	// the first tick arrives still has a price to offer.
 	TicketPrice float64
+
+	// AutoSquareOff is the timed flatten for THIS desk's book: the real book on
+	// the live desk, the simulated one on the terminal. Each desk sets its own,
+	// because being flat by the close is a rule about real capital while a
+	// simulation is usually meant to keep running.
+	AutoSquareOff app.SquareOffStatus
 }
 
 // handleTrade renders the manual trading terminal.
@@ -61,15 +68,8 @@ func (s *Server) handleChainFragment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) tradeData(r *http.Request) tradeData {
-	orders, err := s.app.Engine.OpenOrders(r.Context())
-	if err != nil {
-		s.log.Debug("fetch open orders failed", "err", err)
-	}
-
 	d := tradeData{
 		Watchlist: s.watchlist(),
-		Positions: s.app.Engine.Positions(),
-		Orders:    orders,
 		Streaming: s.app.Engine.HasMarketData(),
 		Routing:   s.app.Engine.BrokerMode(),
 		LiveMode:  s.app.LiveActive(),
@@ -81,8 +81,28 @@ func (s *Server) tradeData(r *http.Request) tradeData {
 	// from the real desk to the simulated one.
 	if strings.EqualFold(r.FormValue("page"), "live") {
 		d.Live = true
-		d.Positions = realOnly(d.Positions)
 	}
+
+	// One desk, one book — for the positions AND the order book, not just the
+	// ticket.
+	//
+	// The terminal used to render every position it could see, so a real
+	// position appeared on the simulated desk with a "Square off REAL" button
+	// beside it. That is precisely the mix the two-page split exists to prevent:
+	// the whole safety argument is that the page you are on tells you whose
+	// money is at stake, and a desk showing both books tells you nothing.
+	//
+	// Orders are scoped for a second reason as well. OpenOrders only ever asks
+	// the simulated broker, so a REAL working order at the exchange did not
+	// appear on the desk that placed it — an order you cannot see is an order
+	// you cannot cancel.
+	d.Positions = onlyBook(s.app.Engine.Positions(), d.Book())
+	orders, err := s.app.Engine.OpenOrdersFor(r.Context(), d.Book())
+	if err != nil {
+		s.log.Debug("fetch open orders failed", "book", d.Book(), "err", err)
+	}
+	d.Orders = orders
+	d.AutoSquareOff = s.app.SquareOffStatusFor(d.Book())
 
 	// A contract picked from the chain arrives as ?symbol=.
 	if sym := strings.ToUpper(strings.TrimSpace(r.FormValue("symbol"))); sym != "" {
@@ -333,6 +353,60 @@ func (s *Server) handleSquareOff(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("Squaring off %s: %s %d.", symbol, order.Side, order.Quantity))
 }
 
+// handleSquareOffTime sets one book's automatic flatten time.
+//
+// The book comes from the form because both desks post here, and unlike an
+// ORDER endpoint that is safe: the worst a wrong book can do is schedule a
+// flatten, which closes positions rather than opening them. Placing orders
+// stays split by endpoint (/api/orders vs /api/live/orders) precisely because
+// there the direction of the mistake runs the other way.
+func (s *Server) handleSquareOffTime(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		s.orderResult(w, http.StatusBadRequest, "error", "Malformed form submission.")
+		return
+	}
+
+	book := broker.BookPaper
+	if strings.EqualFold(strings.TrimSpace(r.FormValue("book")), string(broker.BookReal)) {
+		book = broker.BookReal
+	}
+
+	hhmm, skippedToday, err := s.app.SaveSquareOffTimes(r.Context(), book, r.FormValue("time"))
+	if err != nil {
+		// One branch for both failures. They differ — a rejected time changed
+		// nothing, while a failed write is already in force and will revert on
+		// restart — and the message SaveSquareOffTimes returns says which,
+		// rather than this handler guessing from the error text.
+		s.orderResult(w, http.StatusOK, "error", err.Error())
+		return
+	}
+
+	label := strings.ToUpper(book.String())
+	if hhmm == "" {
+		s.log.Warn("auto square-off disabled", "book", book.String(), "ip", s.clientIP(r))
+		s.orderResult(w, http.StatusOK, "ok",
+			"Auto square-off is OFF for the "+label+" book. Nothing will be flattened on a timer.")
+		return
+	}
+
+	s.log.Warn("auto square-off time set", "book", book.String(),
+		"at", hhmm, "skipped_today", skippedToday, "ip", s.clientIP(r))
+
+	msg := "Auto square-off set: the " + label + " book will be flattened at " + hhmm + " IST."
+	if skippedToday {
+		// Saying this matters. A time typed after it has passed would otherwise
+		// look either broken (nothing happened) or alarming (everything closed
+		// the instant Save was pressed).
+		msg += " That time has already passed today, so it starts tomorrow — " +
+			"square off by hand if you want to be flat now."
+	}
+	if !book.IsReal() {
+		msg += " Simulated positions include strategy positions, and a running " +
+			"strategy may re-enter after the flatten."
+	}
+	s.orderResult(w, http.StatusOK, "ok", msg)
+}
+
 // handleInstrumentSearch powers the order ticket's typeahead.
 func (s *Server) handleInstrumentSearch(w http.ResponseWriter, r *http.Request) {
 	results := s.app.Engine.SearchInstruments(r.URL.Query().Get("q"), 20)
@@ -379,13 +453,15 @@ func joinErrs(errs []error) string {
 	return strings.Join(parts, "; ")
 }
 
-// realOnly keeps the real-money positions. The live desk shows nothing else:
-// mixing simulated rows into the page whose whole purpose is real money would
-// undo the separation it exists to create.
-func realOnly(in []broker.Position) []broker.Position {
+// onlyBook keeps the positions belonging to one book.
+//
+// Each desk shows nothing but its own: mixing simulated rows into the page whose
+// whole purpose is real money — or real rows into the page that cannot trade
+// them — undoes the separation the two pages exist to create.
+func onlyBook(in []broker.Position, book broker.Book) []broker.Position {
 	out := make([]broker.Position, 0, len(in))
 	for _, p := range in {
-		if p.Book.IsReal() {
+		if p.Book.IsReal() == book.IsReal() {
 			out = append(out, p)
 		}
 	}
@@ -448,7 +524,12 @@ func (d tradeData) ChainReadOnly() bool { return d.Live && !d.LiveMode }
 // was constructed — a struct literal in a test included. As fields they were
 // empty on those paths and the template emitted data-poll="".
 func (d tradeData) PositionsPollURL() string {
-	return pollURL("/partials/positions", d.Live, nil)
+	// ?book= is what keeps the desk's book across a refresh. /partials/positions
+	// is shared with the dashboard, which shows BOTH books and passes nothing —
+	// so without this the terminal's five-second poll replaced its paper-only
+	// panel with the dashboard's blended one, and real positions appeared on the
+	// simulated desk a moment after every page load.
+	return pollURL("/partials/positions", d.Live, url.Values{"book": {string(d.Book())}})
 }
 
 // OrdersPollURL is the open-order book's fragment URL.

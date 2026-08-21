@@ -64,6 +64,11 @@ type App struct {
 	// capture is the daily option-candle job, nil when disabled in config.
 	capture *history.CaptureScheduler
 
+	// squareOff flattens each book at its own configured time. Held so the desk
+	// can ask whether today's run has already happened — a time on screen with
+	// no way to tell pending from done is worse than no time at all.
+	squareOff *squareOffScheduler
+
 	// alerts is the outbound channel for operator notifications, or nil when
 	// none is configured. Held rather than passed around because two unrelated
 	// things now push to it — the missing-session watcher and the capture
@@ -75,6 +80,9 @@ type App struct {
 	// riskOverridden records that the active limits came from a saved override
 	// rather than config.yaml, so the UI can say which is in force.
 	riskOverridden bool
+	// squareOffTimes is the per-book auto-flatten clock, editable from the desks
+	// and persisted. See squareoff.go.
+	squareOffTimes SquareOffTimes
 }
 
 // Status is everything the UI header needs in one struct.
@@ -99,7 +107,8 @@ type Status struct {
 	// be neither real money nor a simulation result.
 	RealPnL  float64 `json:"real_pnl"`
 	PaperPnL float64 `json:"paper_pnl"`
-	// Route is how orders are currently routed: "all-paper" or "manual-live".
+	// Route is how orders are currently routed: "all-paper", "manual-live", or
+	// "real-exit-only" (stood down, real book still closable).
 	Route string `json:"route"`
 	// PaperRiskLimits are the simulated book's limits.
 	PaperRiskLimits risk.Limits      `json:"paper_risk_limits"`
@@ -207,6 +216,15 @@ func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog
 
 	a.restorePaperBook(ctx)
 
+	// The auto square-off clock, before Run so the desks can render it even if
+	// the scheduler has not started yet (tests build an App without calling Run).
+	a.squareOffTimes = loadSquareOffTimes(ctx, a.Store, cfg, func(f string, v ...any) {
+		if log != nil {
+			log.Warn(fmt.Sprintf(f, v...))
+		}
+	})
+	a.squareOff = newSquareOffScheduler(a)
+
 	// The persisted token is deliberately NOT restored here. See Run.
 	return a, nil
 }
@@ -227,6 +245,8 @@ func (a *App) Run(ctx context.Context) error {
 
 	a.startCapture(ctx)
 	a.startExpirySweeper(ctx)
+	a.startSquareOffScheduler(ctx)
+	a.startPaperBookRollover(ctx)
 	// Started before the token restore below, so a boot that comes up with no
 	// usable session still produces the alert about it.
 	a.startSessionWatch(ctx, a.alerts)
@@ -318,6 +338,14 @@ func (a *App) LiveActive() bool {
 	return a.liveMode
 }
 
+// RealExitOnly reports that the real book is closed to new orders but can still
+// be closed out: live routing was armed at some point today and has since been
+// stood down, leaving the broker installed for exits.
+//
+// The live desk needs it to distinguish "nothing real to manage" from "stood
+// down holding real positions, which you can still square off here".
+func (a *App) RealExitOnly() bool { return a.Engine.RealExitOnly() }
+
 // ConfirmLive is the third and final gate before real money moves.
 //
 // The gates are, in order: live_confirm in the config file; booting with a paper
@@ -375,6 +403,13 @@ func (a *App) ConfirmLive(ctx context.Context, phrase, password string) error {
 
 // DisarmLive returns order routing to the paper broker without a restart.
 // Open positions are untouched; only new orders are affected.
+//
+// The live broker is KEPT, closed to entries and open to exits — see
+// engine.DisarmLiveEntries. Removing it also removed the only route to the
+// exchange, so an operator who stood down while holding real positions could
+// neither see them (the engine polls the real book only while the broker is
+// installed) nor close them, and had to arm live again — phrase and password —
+// purely to get flat. Standing down must never require escalating first.
 func (a *App) DisarmLive(ctx context.Context) {
 	a.mu.Lock()
 	if !a.liveMode {
@@ -384,9 +419,10 @@ func (a *App) DisarmLive(ctx context.Context) {
 	a.liveMode = false
 	a.mu.Unlock()
 
-	a.Engine.SetLiveBroker(nil)
+	a.Engine.DisarmLiveEntries()
 	if a.Log != nil {
-		a.Log.Warn("live trading disarmed; new manual orders are simulated again")
+		a.Log.Warn("live trading disarmed; new manual orders are simulated again, " +
+			"open real positions can still be squared off")
 	}
 	a.Bus.Publish(events.Event{
 		Kind:    events.KindStatus,

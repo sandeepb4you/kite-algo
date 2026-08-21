@@ -73,6 +73,62 @@
     <div id="live-result" aria-live="polite"></div>
   </div>
 
+  {{/* The real book, below the gate: what is open, and how to close it.
+
+       A disarm keeps the live broker installed for EXITS (see
+       engine.DisarmLiveEntries), so this branch — the unarmed desk — is exactly
+       where an operator who has stood down while holding real positions ends up.
+       Before, they found the arming form and nothing else: the real book had
+       disappeared from every screen, and the only way to close a position was to
+       arm live again, phrase and password included, purely in order to get flat.
+       De-escalating must never require escalating first.
+
+       The card renders whether or not anything is open, because the auto
+       square-off time lives here too and setting it is something you do while
+       FLAT — gating it on holding a position would mean the only time you could
+       schedule tomorrow's flatten was while you were already exposed.
+
+       No ticket anywhere on the page: this closes positions, it cannot open
+       them. */}}
+  <section class="card exit-only">
+    <div class="book-head">
+      <span class="book-tag book-tag-real">REAL — exit only</span>
+      <span class="muted small">
+        Live routing is disarmed, so no new real orders can be placed. Positions
+        already open can still be squared off here.
+      </span>
+    </div>
+
+    {{if .Data.Positions}}
+      <div data-poll="{{.Data.PositionsPollURL}}" data-poll-ms="5000">
+        {{template "positions_book" (realpos .Data.Positions .CSRF)}}
+      </div>
+
+      {{/* Outside the polled div, which would otherwise wipe it on refresh. */}}
+      {{$real := realpos .Data.Positions .CSRF}}
+      {{if $real.Positions}}
+      <form method="post" action="/api/positions/squareoff"
+            data-confirm="Square off every REAL position at market — this closes real money positions. Continue?"
+            data-result="#order-result" class="inline">
+        <input type="hidden" name="_csrf" value="{{.CSRF}}">
+        <input type="hidden" name="book" value="real">
+        <button class="btn btn-danger btn-sm" type="submit">
+          Square off REAL ({{len $real.Positions}})
+        </button>
+      </form>
+      {{end}}
+    {{else}}
+      <p class="muted small">No real positions open.</p>
+    {{end}}
+
+    {{template "squareoff_time" .}}
+
+    {{/* The square-off forms render their outcome here. The panel has its own
+         result target rather than borrowing #live-result above, so a close that
+         failed does not overwrite the arming form's message — and vice versa. */}}
+    <div id="order-result" aria-live="polite"></div>
+  </section>
+
   {{/* The chain, below the gate and read-only.
 
        Opening the live tab used to show nothing but the arming form, which made

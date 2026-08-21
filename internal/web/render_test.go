@@ -249,10 +249,20 @@ func TestTerminalTabsAreCSSOnly(t *testing.T) {
 
 	// The square-off button must sit outside the polled region, or the first
 	// background refresh would delete it.
-	sqIdx := strings.Index(body, "Square off everything")
-	pollIdx := strings.Index(body, `data-poll="/partials/positions"`)
+	//
+	// Matched without the closing quote: the poll URL carries the desk's book as
+	// a query string (?book=paper), and an exact-match search for the bare path
+	// silently found nothing and indexed the body at -1.
+	sqIdx := strings.Index(body, "Square off paper")
+	pollIdx := strings.Index(body, `data-poll="/partials/positions`)
+	if sqIdx < 0 {
+		t.Fatal("no paper square-off button rendered on the terminal")
+	}
+	if pollIdx < 0 {
+		t.Fatal("the positions panel does not poll")
+	}
 	closeIdx := strings.Index(body[pollIdx:], "</div>")
-	if sqIdx > 0 && pollIdx > 0 && sqIdx < pollIdx+closeIdx {
+	if sqIdx < pollIdx+closeIdx {
 		t.Error("the square-off button is inside the polled region and would be wiped by a refresh")
 	}
 }
@@ -679,9 +689,18 @@ func TestDesksPostAndPollToTheirOwnEndpoints(t *testing.T) {
 			t.Errorf("live poll URL %q loses the page identity", got)
 		}
 	}
-	// And the terminal's stay clean.
-	if got := paper.PositionsPollURL(); got != "/partials/positions" {
-		t.Errorf("terminal positions poll = %q, want a bare path", got)
+	// Both desks must name the book they want in every positions poll.
+	//
+	// /partials/positions is shared with the dashboard, which shows BOTH books.
+	// The terminal used to poll it with no parameters at all and was served that
+	// blended view, so the simulated desk loaded correctly and then gained real
+	// positions — with a square-off button — on the first refresh five seconds
+	// later.
+	if got := paper.PositionsPollURL(); !strings.Contains(got, "book=paper") {
+		t.Errorf("terminal positions poll = %q, want the paper book named", got)
+	}
+	if got := live.PositionsPollURL(); !strings.Contains(got, "book=real") {
+		t.Errorf("live positions poll = %q, want the real book named", got)
 	}
 }
 
@@ -722,12 +741,18 @@ func TestRealPositionCloseStillConfirms(t *testing.T) {
 	}
 }
 
-// The square-off control is split per book: flattening simulated positions
-// costs nothing and is one click, flattening real ones spends money and keeps
-// its prompt. One control doing both forced the careful treatment onto the
-// harmless case, which is how an operator learns to click through the prompt
-// that matters.
-func TestSquareOffButtonsAreSplitPerBook(t *testing.T) {
+// Each desk offers a square-off for its OWN book and no other.
+//
+// The terminal used to render both, so a real position sat on the simulated desk
+// with a "Square off REAL" button beside it. The whole safety argument for two
+// pages is that the page you are on tells you whose money is at stake, and a
+// page showing both books tells you nothing.
+//
+// The prompt stays split with them: flattening simulated positions costs nothing
+// and is one click, flattening real ones spends money and confirms. One control
+// doing both forced the careful treatment onto the harmless case, which is how
+// an operator learns to click through the prompt that matters.
+func TestEachDeskSquaresOffOnlyItsOwnBook(t *testing.T) {
 	r, err := NewRenderer(false)
 	if err != nil {
 		t.Fatal(err)
@@ -738,28 +763,50 @@ func TestSquareOffButtonsAreSplitPerBook(t *testing.T) {
 			NetQuantity: -65, AveragePrice: 100, Book: book,
 		}
 	}
-	w := httptest.NewRecorder()
-	v := pageView{Status: app.Status{Mode: "live", LiveActive: true}, CSRF: "x",
-		Data: tradeData{Positions: []broker.Position{
-			pos("REAL-CE", broker.BookReal),
-			pos("PAPER-CE", broker.BookPaper),
-		}}}
-	if err := r.Render(w, 200, "trade.html", v); err != nil {
-		t.Fatal(err)
+	// Deliberately mixed, and deliberately NOT filtered the way the handler
+	// filters: the desk's identity must come from the page, not from a caller
+	// having remembered to hand it the right rows.
+	both := []broker.Position{
+		pos("REAL-CE", broker.BookReal),
+		pos("PAPER-CE", broker.BookPaper),
 	}
-	body := w.Body.String()
+	render := func(tmpl string, data any) string {
+		w := httptest.NewRecorder()
+		v := pageView{Status: app.Status{Mode: "live", LiveActive: true}, CSRF: "x", Data: data}
+		if err := r.Render(w, 200, tmpl, v); err != nil {
+			t.Fatalf("render %s: %v", tmpl, err)
+		}
+		return w.Body.String()
+	}
 
-	if !strings.Contains(body, `name="book" value="real"`) {
-		t.Error("no real-book square-off button")
+	terminal := render("trade.html", tradeData{Positions: both})
+	if strings.Contains(terminal, `name="book" value="real"`) {
+		t.Error("the terminal offers a REAL square-off; that belongs to the live desk")
 	}
-	if !strings.Contains(body, `name="book" value="paper"`) {
-		t.Error("no paper-book square-off button")
+	if !strings.Contains(terminal, `name="book" value="paper"`) {
+		t.Error("the terminal has no paper square-off")
 	}
-	// The paper button must not prompt; the real one must.
-	realIdx := strings.Index(body, `value="real"`)
-	paperIdx := strings.Index(body, `value="paper"`)
-	realForm := body[strings.LastIndex(body[:realIdx], "<form"):realIdx]
-	paperForm := body[strings.LastIndex(body[:paperIdx], "<form"):paperIdx]
+	if strings.Contains(terminal, "REAL-CE") {
+		t.Error("a real position is listed on the simulated desk")
+	}
+
+	live := render("live.html", liveData{tradeData: tradeData{Live: true, Positions: both},
+		Configured: true, Armed: true, SessionOK: true})
+	if !strings.Contains(live, `name="book" value="real"`) {
+		t.Error("the live desk has no REAL square-off")
+	}
+	if strings.Contains(live, `name="book" value="paper"`) {
+		t.Error("the live desk offers a paper square-off; that belongs to the terminal")
+	}
+	if strings.Contains(live, "PAPER-CE") {
+		t.Error("a simulated position is listed on the real desk")
+	}
+
+	// The real button confirms; the paper one does not.
+	realIdx := strings.Index(live, `value="real"`)
+	paperIdx := strings.Index(terminal, `value="paper"`)
+	realForm := live[strings.LastIndex(live[:realIdx], "<form"):realIdx]
+	paperForm := terminal[strings.LastIndex(terminal[:paperIdx], "<form"):paperIdx]
 	if !strings.Contains(realForm, "data-confirm=") {
 		t.Error("flattening the REAL book does not confirm")
 	}
@@ -1098,4 +1145,167 @@ func TestNarrowingFormsDeclareTheirCascade(t *testing.T) {
 			t.Error("the chain selectors do not declare their narrowing order")
 		}
 	})
+}
+
+// The unarmed live desk must still be able to CLOSE what is open.
+//
+// A disarm keeps the live broker installed for exits (engine.DisarmLiveEntries),
+// so an operator who stands down holding real positions lands on this branch of
+// the page. It used to render the arming form and nothing else: the real book had
+// vanished from every screen, and the only route to flat was to arm live again —
+// phrase, password and all — purely in order to get out. De-escalating must never
+// require escalating first.
+func TestUnarmedLiveDeskCanStillSquareOffRealPositions(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	render := func(positions []broker.Position) string {
+		w := httptest.NewRecorder()
+		v := pageView{Status: app.Status{Mode: "live", LiveArmed: true}, CSRF: "x",
+			Data: liveData{
+				tradeData:  tradeData{Live: true, LiveMode: false, Positions: positions},
+				Configured: true, Armed: false, SessionOK: true,
+			}}
+		if err := r.Render(w, 200, "live.html", v); err != nil {
+			t.Fatalf("render live.html: %v", err)
+		}
+		return w.Body.String()
+	}
+
+	held := render([]broker.Position{{
+		StrategyID: "manual", TradingSymbol: "NIFTY25AUG24500CE",
+		Product: broker.ProductMIS, NetQuantity: -75, AveragePrice: 120.5,
+		Book: broker.BookReal,
+	}})
+
+	if !strings.Contains(held, "NIFTY25AUG24500CE") {
+		t.Error("the unarmed desk hides the real position it is holding")
+	}
+	if !strings.Contains(held, `action="/api/positions/squareoff"`) {
+		t.Error("no way to square off the real book from the unarmed desk")
+	}
+	// The exits need somewhere to report to. The square-off forms target
+	// #order-result, which only the armed desk used to have.
+	if !strings.Contains(held, `id="order-result"`) {
+		t.Error("the exit panel has no result target, so a failed close would be silent")
+	}
+	// Still no ticket: this closes positions, it cannot open them.
+	if strings.Contains(held, `id="ticket"`) {
+		t.Error("the unarmed desk renders an order ticket")
+	}
+	if strings.Contains(held, "/api/live/orders") {
+		t.Error("the unarmed desk carries the live order endpoint")
+	}
+	// The arming gate is still the top of the page.
+	if !strings.Contains(held, "ARM LIVE ROUTING") {
+		t.Error("the arming gate disappeared")
+	}
+
+	// Flat, the panel stays — the auto square-off time is set from here, and
+	// scheduling tomorrow's flatten is something you do while holding nothing —
+	// but it offers no square-off, since there is nothing to close.
+	flat := render(nil)
+	// The action, not the book field: the auto square-off form carries
+	// book=real too, so matching that would find the wrong form.
+	if strings.Contains(flat, `action="/api/positions/squareoff"`) {
+		t.Error("a real square-off button rendered with no real positions to close")
+	}
+	if !strings.Contains(flat, "No real positions open") {
+		t.Error("the flat desk does not say the real book is empty")
+	}
+	if !strings.Contains(flat, `action="/api/positions/squareoff-time"`) {
+		t.Error("the auto square-off time cannot be set while flat, which is " +
+			"exactly when an operator would set it")
+	}
+}
+
+// Each desk's auto square-off form must carry ITS OWN book.
+//
+// The book is a hidden field here rather than an endpoint, which is safe — the
+// worst a wrong book can do is schedule a flatten, and a flatten closes
+// positions rather than opening them. It must still be right: a terminal form
+// that posted book=real would set the real book's square-off time from the
+// simulated desk.
+func TestSquareOffTimeFormCarriesTheDesksOwnBook(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	render := func(tmpl string, data any) string {
+		w := httptest.NewRecorder()
+		v := pageView{Status: app.Status{Mode: "live", LiveActive: true}, CSRF: "x", Data: data}
+		if err := r.Render(w, 200, tmpl, v); err != nil {
+			t.Fatalf("render %s: %v", tmpl, err)
+		}
+		return w.Body.String()
+	}
+	// The book field lives in the same form as the time input, so pin them
+	// together rather than asserting the value appears anywhere on the page.
+	bookOf := func(body string) string {
+		i := strings.Index(body, `action="/api/positions/squareoff-time"`)
+		if i < 0 {
+			t.Fatal("no auto square-off form rendered")
+		}
+		end := strings.Index(body[i:], "</form>")
+		form := body[i : i+end]
+		const marker = `name="book" value="`
+		j := strings.Index(form, marker)
+		if j < 0 {
+			t.Fatalf("the square-off time form names no book: %s", form)
+		}
+		rest := form[j+len(marker):]
+		return rest[:strings.Index(rest, `"`)]
+	}
+
+	terminal := render("trade.html", tradeData{})
+	if got := bookOf(terminal); got != "paper" {
+		t.Errorf("the terminal sets the %q book's square-off time, want paper", got)
+	}
+	if !strings.Contains(terminal, `name="time"`) {
+		t.Error("the terminal has no square-off time field")
+	}
+
+	live := render("live.html", liveData{tradeData: tradeData{Live: true},
+		Configured: true, Armed: true, SessionOK: true})
+	if got := bookOf(live); got != "real" {
+		t.Errorf("the live desk sets the %q book's square-off time, want real", got)
+	}
+}
+
+// The desk must distinguish a pending flatten from one that has already run.
+func TestSquareOffTimeStateIsLegible(t *testing.T) {
+	r, err := NewRenderer(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	render := func(so app.SquareOffStatus) string {
+		w := httptest.NewRecorder()
+		v := pageView{Status: app.Status{Mode: "paper"}, CSRF: "x",
+			Data: tradeData{AutoSquareOff: so}}
+		if err := r.Render(w, 200, "trade.html", v); err != nil {
+			t.Fatal(err)
+		}
+		return w.Body.String()
+	}
+
+	off := render(app.SquareOffStatus{Book: broker.BookPaper})
+	if !strings.Contains(off, "Off") {
+		t.Error("a desk with no square-off time does not say so")
+	}
+
+	pending := render(app.SquareOffStatus{
+		Book: broker.BookPaper, Time: "15:25", In: 2 * time.Hour, Positions: 3})
+	if !strings.Contains(pending, "15:25") {
+		t.Error("the pending square-off time is not shown")
+	}
+	if !strings.Contains(pending, "2h 0m") {
+		t.Error("no countdown on a pending square-off")
+	}
+
+	done := render(app.SquareOffStatus{Book: broker.BookPaper, Time: "15:25", Done: true})
+	if !strings.Contains(done, "Ran today") {
+		t.Error("a square-off that has already run reads as still pending, which is " +
+			"the one thing this line exists to disambiguate")
+	}
 }

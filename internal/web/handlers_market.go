@@ -47,9 +47,24 @@ func (s *Server) handleWatchlistFragment(w http.ResponseWriter, r *http.Request)
 }
 
 // handlePositionsFragment is the polled fallback for the positions table.
+//
+// ?book= scopes it to one book, and the desks always pass it. Without that this
+// fragment served the dashboard's blended view to every caller, so the terminal
+// loaded showing paper positions and then — five seconds later, on the first
+// poll — silently gained the real ones, complete with a square-off button. The
+// dashboard and /market pass nothing and still get both books, which is what
+// those pages are for.
 func (s *Server) handlePositionsFragment(w http.ResponseWriter, r *http.Request) {
+	positions := s.app.Engine.Positions()
+	switch strings.ToLower(strings.TrimSpace(r.FormValue("book"))) {
+	case string(broker.BookReal):
+		positions = onlyBook(positions, broker.BookReal)
+	case string(broker.BookPaper):
+		positions = onlyBook(positions, broker.BookPaper)
+	}
+
 	s.renderFragment(w, r, "positions_fragment.html", dashboardData{
-		Positions: s.app.Engine.Positions(),
+		Positions: positions,
 		Streaming: s.app.Engine.HasMarketData(),
 		Routing:   s.app.Engine.BrokerMode(),
 	})
