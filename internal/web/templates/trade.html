@@ -315,7 +315,12 @@
     Off — nothing is flattened on a timer.
     {{if .Data.Live}}Real positions stay open until you close them.{{end}}
   {{else if $so.Done}}
-    Ran today. Next: {{$so.Time}} IST tomorrow.
+    {{/* Deliberately says what WILL happen rather than what did. Today's slot is
+         used up either because the flatten ran or because the process came back
+         up too late for it to be the flatten that was asked for, and on a
+         real-money screen "ran today" would be a claim this line cannot make.
+         What is actually open is listed directly above. */}}
+    Not scheduled again today. Next: {{$so.Time}} IST tomorrow.
   {{else}}
     {{if .Data.Live}}The REAL book{{else}}The simulated book{{end}}
     is flattened at <b>{{$so.Time}} IST</b>{{if $so.Label}} — in {{$so.Label}}{{end}}.

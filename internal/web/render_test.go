@@ -1304,8 +1304,13 @@ func TestSquareOffTimeStateIsLegible(t *testing.T) {
 	}
 
 	done := render(app.SquareOffStatus{Book: broker.BookPaper, Time: "15:25", Done: true})
-	if !strings.Contains(done, "Ran today") {
-		t.Error("a square-off that has already run reads as still pending, which is " +
+	if !strings.Contains(done, "Not scheduled again today") {
+		t.Error("a square-off whose day is used up reads as still pending, which is " +
 			"the one thing this line exists to disambiguate")
+	}
+	// And it must not claim the flatten happened: the day is also used up when
+	// the process came back too late to run it.
+	if strings.Contains(done, "Ran today") {
+		t.Error("the line asserts the flatten ran, which it cannot know")
 	}
 }

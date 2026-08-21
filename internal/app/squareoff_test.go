@@ -164,9 +164,7 @@ func TestSquareOffSchedulerFlattensOneBookOncePerDay(t *testing.T) {
 	}
 	// SaveSquareOffTimes may have marked today done, if the test happens to run
 	// after 15:20 IST. Clear that: this test is about the tick, not the save.
-	a.squareOff.mu.Lock()
-	a.squareOff.done = map[string]string{}
-	a.squareOff.mu.Unlock()
+	clearSquareOffRuns(t, a)
 
 	sched := a.squareOff
 	day := time.Date(2026, 8, 18, 0, 0, 0, 0, history.IST)
@@ -272,4 +270,121 @@ func openPaper(a *App) int {
 		}
 	}
 	return n
+}
+
+// A restart must not repeat a flatten that already ran.
+//
+// The marker used to live only in memory, and the server is restarted from the
+// IDE several times a day: a process coming back at 15:25 saw that 15:10 had
+// passed with nothing recorded and flattened the book again — closing a position
+// the operator had deliberately re-opened after the first flatten.
+func TestSquareOffRunMarkerSurvivesARestart(t *testing.T) {
+	ctx := context.Background()
+	a := newTestApp(t)
+
+	if _, _, err := a.SaveSquareOffTimes(ctx, broker.BookPaper, "15:10"); err != nil {
+		t.Fatalf("set the time: %v", err)
+	}
+	clearSquareOffRuns(t, a)
+
+	day := time.Date(2026, 8, 18, 0, 0, 0, 0, history.IST)
+	a.squareOff.tick(ctx, day.Add(15*time.Hour+10*time.Minute))
+
+	// A brand-new scheduler, as a restart would build.
+	restarted := newSquareOffScheduler(ctx, a)
+	if got := restarted.doneOn(broker.BookPaper); got != "2026-08-18" {
+		t.Fatalf("a restarted scheduler recorded %q for the paper book, want 2026-08-18 — "+
+			"it would flatten the book a second time", got)
+	}
+
+	// Prove it behaves, not just that it remembers: a position opened after the
+	// flatten survives the next tick.
+	const symbol = "NIFTY2681824350CE"
+	a.paper.OnPrice(symbol, 100)
+	if _, err := a.Engine.PlaceOrder(ctx, broker.OrderRequest{
+		StrategyID: "manual", Exchange: "NFO", TradingSymbol: symbol,
+		Product: broker.ProductMIS, OrderType: broker.OrderTypeMarket,
+		Side: broker.SideSell, Quantity: 65, Validity: broker.ValidityDay,
+	}); err != nil {
+		t.Fatalf("re-open after the flatten: %v", err)
+	}
+	a.Engine.RefreshPositions(ctx)
+
+	restarted.tick(ctx, day.Add(15*time.Hour+25*time.Minute))
+	a.Engine.RefreshPositions(ctx)
+	if openPaper(a) != 1 {
+		t.Error("a restarted scheduler flattened a position opened after the day's run")
+	}
+}
+
+// Hours late is not a catchup, it is a surprise.
+//
+// The scheduler fires on "the time has passed and today has not run", so without
+// a window every boot became a catchup: a process started at 20:00 would decide
+// 15:10 had passed and place market orders into a closed market, and a Saturday
+// restart would do it to whatever is held over the weekend.
+func TestSquareOffDoesNotRunLongAfterItsTime(t *testing.T) {
+	ctx := context.Background()
+	a := newTestApp(t)
+
+	const symbol = "NIFTY2681824350CE"
+	a.paper.OnPrice(symbol, 100)
+	if _, err := a.Engine.PlaceOrder(ctx, broker.OrderRequest{
+		StrategyID: "manual", Exchange: "NFO", TradingSymbol: symbol,
+		Product: broker.ProductNRML, OrderType: broker.OrderTypeMarket,
+		Side: broker.SideSell, Quantity: 65, Validity: broker.ValidityDay,
+	}); err != nil {
+		t.Fatalf("open a position: %v", err)
+	}
+	a.Engine.RefreshPositions(ctx)
+
+	if _, _, err := a.SaveSquareOffTimes(ctx, broker.BookPaper, "15:10"); err != nil {
+		t.Fatalf("set the time: %v", err)
+	}
+	clearSquareOffRuns(t, a)
+
+	day := time.Date(2026, 8, 18, 0, 0, 0, 0, history.IST)
+
+	// Inside the window a catchup is exactly right: the platform was down at
+	// 15:10 and the rule still says be flat.
+	a.squareOff.tick(ctx, day.Add(15*time.Hour+40*time.Minute))
+	a.Engine.RefreshPositions(ctx)
+	if openPaper(a) != 0 {
+		t.Fatal("a flatten thirty minutes late did not run; that is a genuine catchup")
+	}
+
+	// Outside it, the moment has gone. Re-open and jump to the evening.
+	if _, err := a.Engine.PlaceOrder(ctx, broker.OrderRequest{
+		StrategyID: "manual", Exchange: "NFO", TradingSymbol: symbol,
+		Product: broker.ProductNRML, OrderType: broker.OrderTypeMarket,
+		Side: broker.SideSell, Quantity: 65, Validity: broker.ValidityDay,
+	}); err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	a.Engine.RefreshPositions(ctx)
+	clearSquareOffRuns(t, a)
+
+	a.squareOff.tick(ctx, day.Add(20*time.Hour))
+	a.Engine.RefreshPositions(ctx)
+	if openPaper(a) != 1 {
+		t.Error("a flatten ran nearly five hours late, into a closed market")
+	}
+	// Claimed anyway, so it is reported once rather than every minute to midnight.
+	if got := a.squareOff.doneOn(broker.BookPaper); got != "2026-08-18" {
+		t.Errorf("the skipped day was not claimed (%q), so it would log every minute", got)
+	}
+}
+
+// clearSquareOffRuns forgets which books have been flattened today, in memory and
+// in the store. SaveSquareOffTimes marks the day done when the time it is given
+// has already passed, which is right in production and in the way of a test that
+// wants to drive the tick itself.
+func clearSquareOffRuns(t *testing.T, a *App) {
+	t.Helper()
+	a.squareOff.mu.Lock()
+	a.squareOff.done = map[string]string{}
+	a.squareOff.mu.Unlock()
+	if err := a.Store.DeleteSetting(context.Background(), squareOffRunsKey); err != nil {
+		t.Fatalf("clear the run history: %v", err)
+	}
 }

@@ -30,8 +30,23 @@ import (
 // positions in contracts expiring TODAY. This flattens the whole book at the
 // given time whether anything is expiring or not.
 
-// squareOffTimesKey is where the operator's chosen times are stored.
-const squareOffTimesKey = "squareoff.times"
+// squareOffTimesKey is where the operator's chosen times are stored, and
+// squareOffRunsKey the IST date each book was last flattened on.
+const (
+	squareOffTimesKey = "squareoff.times"
+	squareOffRunsKey  = "squareoff.lastrun"
+)
+
+// squareOffGrace is how late a missed flatten may still run.
+//
+// The scheduler fires on "the time has passed and today has not run yet", which
+// on its own makes every boot a catchup: a process started at 20:00 would decide
+// that 15:10 had passed and flatten the book into a closed market, and a Saturday
+// restart would do the same to whatever is held over the weekend. Inside the
+// window a catchup is what you want — the platform was down at 15:10 and the rule
+// still says be flat — and outside it, the moment has gone and the honest thing
+// is to say so and leave the book alone.
+const squareOffGrace = time.Hour
 
 // SquareOffTimes is the auto square-off clock for both books, as "HH:MM" in IST.
 // An empty string means off.
@@ -66,9 +81,10 @@ type SquareOffStatus struct {
 	Time string
 	// Positions is how many open positions the flatten would close right now.
 	Positions int
-	// Done reports that today's flatten has already run, so the time showing on
-	// screen is tomorrow's rather than something still pending. Without this the
-	// desk said "auto square-off 15:20" all afternoon and gave no way to tell a
+	// Done reports that today's slot is used up — the flatten ran, or the
+	// process came back too late for it to run — so the time showing on screen
+	// is tomorrow's rather than something still pending. Without this the desk
+	// said "auto square-off 15:20" all afternoon and gave no way to tell a
 	// pending flatten from one that had already happened.
 	Done bool
 	// In is how long until today's run. Zero when off, already run, or past.
@@ -264,17 +280,63 @@ type squareOffScheduler struct {
 	done map[string]string // book -> IST date the flatten last ran on
 }
 
-func newSquareOffScheduler(a *App) *squareOffScheduler {
-	return &squareOffScheduler{app: a, done: make(map[string]string)}
+// newSquareOffScheduler builds the scheduler, restoring which books have already
+// been flattened today.
+//
+// The restore is the point. Held only in memory, the marker was lost on every
+// restart, and the server is restarted from the IDE several times a day: a
+// process coming back up at 15:25 saw that 15:10 had passed with no run recorded
+// and flattened the book a second time — including a position the operator had
+// deliberately re-opened after the first flatten. The daily-loss lockout next
+// door persists for exactly this reason.
+func newSquareOffScheduler(ctx context.Context, a *App) *squareOffScheduler {
+	s := &squareOffScheduler{app: a, done: make(map[string]string)}
+	if a.Store == nil {
+		return s
+	}
+	raw, found, err := a.Store.GetSetting(ctx, squareOffRunsKey)
+	if err != nil || !found {
+		if err != nil && a.Log != nil {
+			a.Log.Warn("read square-off run history failed; a restart today may "+
+				"repeat a flatten that already ran", "err", err)
+		}
+		return s
+	}
+	if err := json.Unmarshal([]byte(raw), &s.done); err != nil {
+		s.done = make(map[string]string)
+		if a.Log != nil {
+			a.Log.Warn("square-off run history is unreadable", "err", err)
+		}
+	}
+	return s
 }
 
+// markDone claims a book's flatten for one IST date, and persists the claim.
+//
+// Called BEFORE the flatten, never after: a square-off that partially fails must
+// not be retried a minute later on the positions that did close, because the
+// second closing order would open the opposite position in a book the first one
+// already flattened.
 func (s *squareOffScheduler) markDone(book broker.Book, date string) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	s.done[book.String()] = date
+	blob, err := json.Marshal(s.done)
 	s.mu.Unlock()
+
+	if err != nil || s.app == nil || s.app.Store == nil {
+		return
+	}
+	// Best effort, and loud when it fails: the flatten still happens, but a
+	// restart could repeat it.
+	if err := s.app.Store.SetSetting(context.Background(), squareOffRunsKey, string(blob)); err != nil {
+		if s.app.Log != nil {
+			s.app.Log.Warn("could not persist the square-off run marker; a restart "+
+				"today may repeat this flatten", "book", book.String(), "err", err)
+		}
+	}
 }
 
 func (s *squareOffScheduler) doneOn(book broker.Book) string {
@@ -293,7 +355,7 @@ func (s *squareOffScheduler) doneOn(book broker.Book) string {
 // mean a time set from the desk never fired until a restart.
 func (a *App) startSquareOffScheduler(ctx context.Context) {
 	if a.squareOff == nil {
-		a.squareOff = newSquareOffScheduler(a)
+		a.squareOff = newSquareOffScheduler(ctx, a)
 	}
 	if a.Log != nil {
 		t := a.SquareOffTimes()
@@ -346,17 +408,25 @@ func (s *squareOffScheduler) tick(ctx context.Context, now time.Time) {
 			continue
 		}
 		s.mu.Lock()
-		if s.done[book.String()] == today {
-			s.mu.Unlock()
+		claimed := s.done[book.String()] == today
+		s.mu.Unlock()
+		if claimed {
 			continue
 		}
-		// Claimed BEFORE the flatten, not after. A square-off that partially
-		// fails must not be retried a minute later on the positions that did
-		// close — that would place a second closing order into a book the first
-		// one already flattened, opening the opposite position.
-		s.done[book.String()] = today
-		s.mu.Unlock()
 
+		// Too late to be the flatten that was asked for. Claim the day anyway,
+		// so this is said once rather than every minute until midnight.
+		if since > due+squareOffGrace {
+			s.markDone(book, today)
+			if s.app.Log != nil {
+				s.app.Log.Warn("auto square-off NOT run: its time passed too long ago",
+					"book", book.String(), "at", hhmm, "now", local.Format("15:04"),
+					"grace", squareOffGrace.String())
+			}
+			continue
+		}
+
+		s.markDone(book, today)
 		s.flatten(ctx, book, local)
 	}
 }

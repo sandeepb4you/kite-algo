@@ -223,7 +223,7 @@ func New(ctx context.Context, cfg *config.Config, store storage.Store, log *slog
 			log.Warn(fmt.Sprintf(f, v...))
 		}
 	})
-	a.squareOff = newSquareOffScheduler(a)
+	a.squareOff = newSquareOffScheduler(ctx, a)
 
 	// The persisted token is deliberately NOT restored here. See Run.
 	return a, nil

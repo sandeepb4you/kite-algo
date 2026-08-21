@@ -145,9 +145,13 @@ risk:
     # saved value wins — which is the point, since "flat by 15:20" is a decision
     # that changes with the day, not something to redeploy for.
     #
-    # Empty (the default) means off. Inventing a time at which real positions
-    # disappear is not a default anyone should get by accident.
-    square_off_time: ""
+    # Empty means off. Inventing a time at which real positions disappear is not
+    # a default anyone should get by accident, so the shipped default is off —
+    # this file sets it deliberately.
+    #
+    # 15:10 sits after expiry_square_off_time above (15:00), so on expiry day the
+    # expiring contracts go first and whatever is left goes at 15:10.
+    square_off_time: "15:10"
   # Limits for the SIMULATED book, which runs alongside the real one: manual
   # orders can be routed to the exchange while every strategy stays on paper.
   #
@@ -166,10 +170,13 @@ risk:
     # close is a rule about real capital, while a simulation is usually meant to
     # keep running so a strategy is measured on what it actually did.
     #
-    # Set from the terminal at runtime; empty (the default) means off. Note that
-    # this closes STRATEGY positions too, and a running strategy may re-enter
-    # afterwards.
-    square_off_time: ""
+    # Set from the terminal at runtime; empty means off.
+    #
+    # 15:10 is five minutes before short-straddle's own square_off_time (15:15),
+    # so the platform closes its legs first and that rule stops mattering. The
+    # strategy does not re-enter: its entered flag is once-per-day and only
+    # resets when the IST date rolls. A strategy that CAN re-enter would.
+    square_off_time: "15:10"
 
 # Strategy instances. Set enabled: true to activate.
 strategies:
